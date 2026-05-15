@@ -11,7 +11,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 
 # Go variables
-GO_VERSION = 1.24.3
+GO_VERSION = 1.25.10
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
@@ -165,6 +165,11 @@ vuln-check:
 	else \
 		echo "govulncheck not installed, skipping vulnerability check"; \
 	fi
+
+# Run security scans (standardized)
+security-scan:
+	@chmod +x scripts/security-scan.sh
+	@./scripts/security-scan.sh
 
 # Create a release tarball
 release: clean build-all

@@ -1,6 +1,8 @@
 module github.com/strettch/sc-metrics-agent
 
-go 1.24.3
+go 1.25
+
+toolchain go1.25.10
 
 require (
 	github.com/google/uuid v1.6.0

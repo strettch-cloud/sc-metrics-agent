@@ -34,7 +34,10 @@ jobs:
       with:
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
-    
+
+    - name: Scan for injected payloads (polin-guard)
+      run: npx --yes polin-guard@0.3.2 --ci
+
     - name: Setup Go
       uses: actions/setup-go@v5
       with:

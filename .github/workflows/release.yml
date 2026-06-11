@@ -30,7 +30,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    
+
+    - name: Scan for injected payloads (polin-guard)
+      run: npx --yes polin-guard@0.3.2 --ci
+
     - name: Validate semantic version
       id: validate
       run: |

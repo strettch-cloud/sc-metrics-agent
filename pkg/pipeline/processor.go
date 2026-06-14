@@ -9,6 +9,7 @@ import (
 	"github.com/strettch/sc-metrics-agent/pkg/clients/metadata"
 	"github.com/strettch/sc-metrics-agent/pkg/clients/tsclient"
 	"github.com/strettch/sc-metrics-agent/pkg/collector"
+	"github.com/strettch/sc-metrics-agent/pkg/config"
 	"github.com/strettch/sc-metrics-agent/pkg/decorator"
 	"go.uber.org/zap"
 )
@@ -24,7 +25,7 @@ type Processor struct {
 	aggregator      aggregate.Aggregator
 	writer          tsclient.MetricWriter
 	authMgr         *metadata.AuthManager // External auth handling
-	version         string
+	cfg             *config.Config
 	heartbeatTicker *time.Ticker
 	ctx             context.Context    // Lifecycle context
 	cancel          context.CancelFunc // Lifecycle cancel
@@ -51,7 +52,7 @@ func NewProcessor(
 	aggregator aggregate.Aggregator,
 	writer tsclient.MetricWriter,
 	authMgr *metadata.AuthManager,
-	version string,
+	cfg *config.Config,
 	logger *zap.Logger,
 ) *Processor {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -62,7 +63,7 @@ func NewProcessor(
 		aggregator:      aggregator,
 		writer:          writer,
 		authMgr:         authMgr,
-		version:         version,
+		cfg:             cfg,
 		logger:          logger,
 		heartbeatTicker: time.NewTicker(heartbeatInterval),
 		ctx:             ctx,
@@ -87,11 +88,16 @@ func NewProcessor(
 
 // Process executes the complete pipeline: Collect -> Decorate -> Aggregate -> Write
 func (p *Processor) Process(ctx context.Context) error {
-	// Get the current auth token with retry
-	authToken, err := p.getAuthTokenWithRetry(ctx)
-	if err != nil {
-		p.lastError = "auth token is empty"
-		return err
+	// Refresh auth token; failures are non-fatal since writes are buffered
+	// and will resume once auth recovers.
+	authToken, authErr := p.getAuthTokenWithRetry(ctx)
+	if authErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		p.logger.Warn("Auth token unavailable; batch will be buffered for later delivery",
+			zap.Error(authErr))
+		p.lastError = fmt.Sprintf("auth unavailable, buffering: %v", authErr)
 	}
 
 	startTime := time.Now()
@@ -179,7 +185,9 @@ func (p *Processor) Process(ctx context.Context) error {
 	processingTime := time.Since(startTime)
 	p.lastProcessTime = startTime
 	p.lastMetricCount = len(aggregatedMetrics)
-	p.lastError = "" // Clear error on successful processing
+	if authErr == nil {
+		p.lastError = ""
+	}
 
 	p.logger.Info("Pipeline processing completed successfully",
 		zap.Int("collected_families", len(metricFamilies)),
@@ -272,7 +280,7 @@ func (p *Processor) WriteDiagnostics(ctx context.Context) error {
 	}
 
 	// Send diagnostics
-	if err := p.writer.WriteDiagnostics(ctx, p.getAgentID(), status, p.lastError, collectorStatus, authToken); err != nil {
+	if err := p.writer.WriteDiagnostics(ctx, p.cfg.VMID, status, p.lastError, collectorStatus, authToken); err != nil {
 		p.logger.Error("Failed to write diagnostics", zap.Error(err))
 		return fmt.Errorf("failed to write diagnostics: %w", err)
 	}
@@ -336,19 +344,6 @@ func (p *Processor) Close() error {
 	return nil
 }
 
-// getAgentID generates a unique identifier for this agent instance
-func (p *Processor) getAgentID() string {
-	// In a real implementation, this might be configured or derived from system info
-	// For now, we'll use a simple approach
-	if systemCollector, ok := p.collector.(*collector.SystemCollector); ok {
-		enabled := systemCollector.GetEnabledCollectors()
-		if len(enabled) > 0 {
-			return fmt.Sprintf("sc-agent-%d", time.Now().Unix())
-		}
-	}
-	return fmt.Sprintf("sc-agent-%d", time.Now().Unix())
-}
-
 // ValidateConfiguration checks if the processor is properly configured
 func (p *Processor) ValidateConfiguration() error {
 	if p.collector == nil {
@@ -378,14 +373,6 @@ func (p *Processor) ValidateConfiguration() error {
 	return nil
 }
 
-// ProcessWithTimeout executes the pipeline with a timeout
-func (p *Processor) ProcessWithTimeout(ctx context.Context, timeout time.Duration) error {
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	
-	return p.Process(timeoutCtx)
-}
-
 // heartbeatWorker sends periodic heartbeats
 func (p *Processor) heartbeatWorker() {
 	for {
@@ -411,7 +398,7 @@ func (p *Processor) sendHeartbeat() {
 		return
 	}
 
-	if err := p.writer.SendHeartbeat(ctx, token, p.version); err != nil {
+	if err := p.writer.SendHeartbeat(ctx, token, p.cfg.AgentVersion); err != nil {
 		p.logger.Error("Failed to send heartbeat", zap.Error(err))
 		return
 	}

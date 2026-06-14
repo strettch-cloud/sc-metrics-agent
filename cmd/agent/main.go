@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/strettch/sc-metrics-agent/pkg/aggregate"
+	"github.com/strettch/sc-metrics-agent/pkg/buffer"
 	"github.com/strettch/sc-metrics-agent/pkg/clients/metadata"
 	"github.com/strettch/sc-metrics-agent/pkg/clients/tsclient"
 	"github.com/strettch/sc-metrics-agent/pkg/collector"
@@ -124,7 +125,11 @@ func main() {
 		RetryDelay: cfg.RetryInterval,
 	}
 	httpClient := tsclient.NewClient(clientConfig, logger)
-	metricWriter := tsclient.NewMetricWriter(httpClient, logger)
+	// Auxiliary writer handles heartbeats and diagnostics (not buffered);
+	// buffered writer queues metrics so they survive auth or ingest outages.
+	auxWriter := tsclient.NewAuxiliaryWriter(httpClient, logger)
+	metricQueue := buffer.NewQueue(buffer.DefaultMaxBytes, logger)
+	metricWriter := tsclient.NewBufferedMetricWriter(httpClient, metricQueue, auxWriter, logger)
 
 	// Create processing pipeline
 	pipelineProcessor := pipeline.NewProcessor(
@@ -133,7 +138,7 @@ func main() {
 		aggregator,
 		metricWriter,
 		authMgr,
-		cfg.AgentVersion,
+		cfg,
 		logger,
 	)
 

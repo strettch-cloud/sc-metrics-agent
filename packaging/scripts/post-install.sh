@@ -13,6 +13,7 @@ readonly UPDATER_TIMER="sc-metrics-agent-update-scheduler.timer"
 # Define directories
 readonly RUNTIME_DIR="/var/run/sc-metrics-agent"
 readonly CONFIG_DIR="/etc/sc-metrics-agent"
+readonly STATE_DIR="/var/lib/sc-metrics-agent"
 readonly CONFIG_DOWNLOAD_SCRIPT="/usr/lib/sc-metrics-agent/download-config.sh"
 
 # Helper function for colored output
@@ -31,8 +32,9 @@ echo "Configuring SC-Metrics-Agent..."
 
 # Create necessary directories with proper ownership
 print_status "info" "Creating required directories..."
-install -d -m 750 "$RUNTIME_DIR" 
+install -d -m 750 "$RUNTIME_DIR"
 install -d -m 755 "$CONFIG_DIR"
+install -d -m 750 "$STATE_DIR"
 
 # Create default config if it doesn't exist
 if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then

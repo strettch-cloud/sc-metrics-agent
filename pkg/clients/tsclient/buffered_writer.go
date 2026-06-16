@@ -26,21 +26,20 @@ type compressedSender interface {
 	IngestEndpointAvailable() bool
 }
 
-// BufferedMetricWriter queues metric batches in memory and drains them only
-// when the downstream is healthy. Failed sends stop the drain, leaving the
-// batch at the head of the queue for retry on the next tick.
+// BufferedMetricWriter stores metric batches on disk and sends them only when
+// downstream is healthy. Failed sends are retried on the next drain cycle.
 type BufferedMetricWriter struct {
 	sender compressedSender
-	queue  *buffer.Queue
+	queue  *buffer.DiskQueue
 	aux    AuxiliaryWriter
 	logger *zap.Logger
 }
 
-// NewBufferedMetricWriter wraps a *Client with an in-memory queue.
+// NewBufferedMetricWriter wraps a *Client with a disk-backed queue.
 // The aux writer carries diagnostics and heartbeats unbuffered.
 func NewBufferedMetricWriter(
 	client *Client,
-	queue *buffer.Queue,
+	queue *buffer.DiskQueue,
 	aux AuxiliaryWriter,
 	logger *zap.Logger,
 ) *BufferedMetricWriter {
@@ -67,9 +66,8 @@ func (bw *BufferedMetricWriter) WriteMetrics(ctx context.Context, metrics []aggr
 	}
 
 	if !bw.queue.Push(compressed) {
-		// Drop-newest preserves the unbroken pre-outage timeline at the head
-		// of the queue; logging surfaces the data loss to operators.
-		bw.logger.Warn("Buffer full, dropping current batch",
+		// Push refused — either the cap is hit or the disk write failed.
+		bw.logger.Warn("Batch not buffered; dropping for this tick",
 			zap.Int("batch_bytes", len(compressed)),
 			zap.Int("buffered_bytes", bw.queue.Bytes()),
 			zap.Int("buffered_batches", bw.queue.Len()),
@@ -119,7 +117,7 @@ func (bw *BufferedMetricWriter) drain(ctx context.Context, authToken string) err
 	default:
 	}
 
-	batches := bw.queue.PeekN(DrainBatchSize)
+	batches := bw.queue.ReadN(DrainBatchSize)
 	if len(batches) == 0 {
 		return nil
 	}

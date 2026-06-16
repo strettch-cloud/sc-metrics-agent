@@ -72,11 +72,13 @@ func (f *fakeSender) lastEnvelope() []string {
 
 func newTestWriter(t *testing.T, queueBytes int, sender *fakeSender) *BufferedMetricWriter {
 	t.Helper()
+	q, err := buffer.NewDiskQueue(t.TempDir(), queueBytes, zap.NewNop())
+	require.NoError(t, err)
 	return &BufferedMetricWriter{
-		sender:    sender,
-		queue:     buffer.NewQueue(queueBytes, zap.NewNop()),
+		sender: sender,
+		queue:  q,
 		aux:    nil, // unused in these tests
-		logger:    zap.NewNop(),
+		logger: zap.NewNop(),
 	}
 }
 

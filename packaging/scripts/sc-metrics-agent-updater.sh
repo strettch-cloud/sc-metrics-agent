@@ -14,6 +14,7 @@ readonly MAX_RETRIES=3
 readonly RETRY_DELAY=30
 readonly APT_LOCK_TIMEOUT="${SC_APT_LOCK_TIMEOUT:-300}"
 readonly CONFIG_DOWNLOAD_SCRIPT="/usr/lib/sc-metrics-agent/download-config.sh"
+readonly APT_SOURCES_LIST="${PACKAGE_NAME}.list"
 
 # Ensure we're running as root
 if [ "$EUID" -ne 0 ]; then 
@@ -74,6 +75,15 @@ export SC_AGENT_AUTO_UPDATER=1
 # Ensure every apt operation waits for the dpkg frontend lock.
 apt_get_with_lock() {
     apt-get -o DPkg::Lock::Timeout="${APT_LOCK_TIMEOUT}" "$@"
+}
+
+# Refresh only the sc-metrics source so unrelated third-party APT
+# repos on the host cannot block auto-updates by failing `apt-get update`.
+apt_update_agent_only() {
+    apt_get_with_lock update \
+        -o Dir::Etc::sourcelist="sources.list.d/${APT_SOURCES_LIST}" \
+        -o Dir::Etc::sourceparts="/dev/null" \
+        -o APT::Get::List-Cleanup="0"
 }
 
 # Function to check package health
@@ -139,14 +149,20 @@ else
     log "INFO" "Service is not running, will remain stopped after update"
 fi
 
-# Update package lists with retry
+# Verify the metrics APT source exists before scoping update to it.
+if [ ! -f "/etc/apt/sources.list.d/${APT_SOURCES_LIST}" ]; then
+    log "ERROR" "Metrics APT source missing: /etc/apt/sources.list.d/${APT_SOURCES_LIST}"
+    exit 1
+fi
+
+# Update package lists with retry (scoped to the metrics source only)
 for attempt in $(seq 1 ${MAX_RETRIES}); do
     log "INFO" "Updating package lists (attempt ${attempt}/${MAX_RETRIES})"
-    
+
     # Clean package cache for fresh data
     apt_get_with_lock clean
-    
-    if apt_get_with_lock update 2>&1; then
+
+    if apt_update_agent_only 2>&1; then
         log "INFO" "Package list update successful"
         break
     else
@@ -188,7 +204,7 @@ UPDATE_SUCCESS=false
 for attempt in $(seq 1 ${MAX_RETRIES}); do
     log "INFO" "Installation attempt ${attempt}/${MAX_RETRIES}"
     
-    if apt_get_with_lock install -y \
+    if apt_get_with_lock install -y --only-upgrade \
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
         -o APT::Get::AutomaticRemove=false \

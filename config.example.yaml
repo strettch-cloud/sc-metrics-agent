@@ -66,3 +66,6 @@ log_level: "info"
 # Retry settings
 max_retries: 3
 retry_interval: 5s
+
+# On-disk metric buffer location. 
+buffer_dir: /var/lib/sc-metrics-agent/buffer

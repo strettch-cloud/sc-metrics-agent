@@ -47,7 +47,13 @@ type Config struct {
 
 	// Agent version
 	AgentVersion string `yaml:"agent_version" json:"agent_version"`
+
+	// On-disk directory for the buffered metric queue.
+	BufferDir string `yaml:"buffer_dir" json:"buffer_dir"`
 }
+
+// DefaultBufferDir is the default on-disk buffer location.
+const DefaultBufferDir = "/var/lib/sc-metrics-agent/buffer"
 
 // CollectorConfig defines which collectors are enabled
 type CollectorConfig struct {
@@ -172,6 +178,7 @@ func DefaultConfig() *Config {
 		MaxRetries:    3,
 		RetryInterval: 5 * time.Second,
 		AgentVersion:  detectAgentVersion(),
+		BufferDir:     DefaultBufferDir,
 	}
 }
 
@@ -477,6 +484,10 @@ func (c *Config) validate() error {
 
 	if c.RetryInterval <= 0 {
 		return fmt.Errorf("retry_interval must be positive")
+	}
+
+	if c.BufferDir == "" {
+		return fmt.Errorf("buffer_dir must be set")
 	}
 
 	// Validate log level

@@ -63,6 +63,12 @@ if [ ! -f /etc/debian_version ]; then
     exit 1
 fi
 
+# Verify the metrics APT source exists before scoping update to it.
+if [ ! -f "/etc/apt/sources.list.d/${APT_SOURCES_LIST}" ]; then
+    log "ERROR" "Metrics APT source missing: /etc/apt/sources.list.d/${APT_SOURCES_LIST}"
+    exit 1
+fi
+
 # Add jitter to prevent thundering herd
 JITTER=$((RANDOM % 60))
 log "INFO" "Adding ${JITTER}s jitter delay"
@@ -147,12 +153,6 @@ if systemctl is-active --quiet "${PACKAGE_NAME}"; then
     log "INFO" "Service is currently running, will restart after update"
 else
     log "INFO" "Service is not running, will remain stopped after update"
-fi
-
-# Verify the metrics APT source exists before scoping update to it.
-if [ ! -f "/etc/apt/sources.list.d/${APT_SOURCES_LIST}" ]; then
-    log "ERROR" "Metrics APT source missing: /etc/apt/sources.list.d/${APT_SOURCES_LIST}"
-    exit 1
 fi
 
 # Update package lists with retry (scoped to the metrics source only)

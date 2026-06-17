@@ -107,9 +107,13 @@ cat > "/etc/apt/sources.list.d/${PACKAGE_NAME}.list" <<EOF
 deb [signed-by=/usr/share/keyrings/${PACKAGE_NAME}-keyring.gpg] ${PACKAGE_REPO_URL}/apt stable main
 EOF
 
-# Update package index to include our new repository
+# Update package index — scoped to only our source so unrelated third-party
+# repos on the host cannot block install by failing `apt-get update`.
 echo "Updating package index..."
-if ! apt_get_with_retry update; then
+if ! apt_get_with_retry update \
+    -o Dir::Etc::sourcelist="sources.list.d/${PACKAGE_NAME}.list" \
+    -o Dir::Etc::sourceparts="/dev/null" \
+    -o APT::Get::List-Cleanup="0"; then
     echo "Error: Failed to update package index"
     echo "This might be a temporary network issue. Please try again later."
     exit 1

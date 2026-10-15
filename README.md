@@ -89,9 +89,10 @@ sudo systemctl status sc-metrics-agent
 For developers who want to build from source:
 
 ```bash
-git clone https://github.com/strettch/sc-metrics-agent.git
+git clone https://github.com/strettch-cloud/sc-metrics-agent.git
 cd sc-metrics-agent
-make build
+mise install   # toolchain pinned in mise.toml
+mise run build
 ```
 
 ## Configuration
@@ -118,19 +119,19 @@ The agent automatically detects your VM's unique identifier using `dmidecode`. T
 
 ```bash
 # Build the agent
-make build
+mise run build
 
 # Run with default configuration (looks for config.yaml in current dir)
-sudo ./build/sc-agent
+sudo ./build/sc-metrics-agent
 
 # Specify a config file
-sudo SC_AGENT_CONFIG=/path/to/your/config.yaml ./build/sc-agent
+sudo SC_AGENT_CONFIG=/path/to/your/config.yaml ./build/sc-metrics-agent
 ```
 
 ### Checking Version
 
 ```bash
-./build/sc-agent -v
+./build/sc-metrics-agent -v
 # or if installed via package manager
 sc-metrics-agent -v
 ```
@@ -152,31 +153,20 @@ The agent collects a wide range of metrics. Below is a summary. For a detailed l
 
 ## Development
 
-### Building
+Tools and tasks are defined in `mise.toml`. Install [mise](https://mise.jdx.dev), then run
+`mise install` once; `mise tasks` lists everything available.
 
 ```bash
-make build
-```
-
-### Testing
-
-```bash
-make test
-```
-
-### Linting
-
-```bash
-make lint
+mise run build          # Build for this machine (GOOS/GOARCH to cross-compile)
+mise run test           # Tests with the race detector
+mise run lint           # golangci-lint
+mise run security-scan  # Trivy + govulncheck
 ```
 
 ### Releasing
 
-The release process is managed by `make` targets and the `packaging/scripts/release.sh` script. It involves version bumping, git tagging, and potentially building release artifacts.
-
--   `make release-patch`
--   `make release-minor`
--   `make release-major`
+Every merge to `main` produces a beta release and stable releases are dispatched manually;
+see [.github/README.md](.github/README.md).
 
 ## Contributing
 
@@ -185,8 +175,8 @@ Contributions are welcome! Please follow these steps:
 1.  Fork the repository.
 2.  Create a new branch (`git checkout -b feature/your-feature-name`).
 3.  Make your changes.
-4.  Ensure tests pass (`make test`).
-5.  Ensure code is linted (`make lint`).
+4.  Ensure tests pass (`mise run test`).
+5.  Ensure code is linted (`mise run lint`).
 6.  Commit your changes (`git commit -am 'Add some feature'`).
 7.  Push to the branch (`git push origin feature/your-feature-name`).
 8.  Create a new Pull Request.

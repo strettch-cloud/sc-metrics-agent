@@ -1,4 +1,6 @@
 # beta.yml - Beta Release Workflow
+# Every merge to main produces a beta GitHub pre-release with signed build
+# provenance.
 name: Beta Release
 
 on:
@@ -7,127 +9,88 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - '.github/workflows/release.yml'
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Reason for manual release'
-        required: false
-        default: 'Manual release trigger'
 
-env:
-  GO_VERSION: '1.25'
-  DEBIAN_FRONTEND: noninteractive
+permissions: {}
+
+# Betas run one at a time so two runs never compute the same beta number. GitHub
+# keeps one pending run per group, so a newer push replaces a queued beta; that is
+# safe because the newer run includes its commits. Stable releases use their own
+# group so a beta can never cancel a queued one.
+concurrency:
+  group: release-beta
+  cancel-in-progress: false
 
 jobs:
-  beta-release:
-    name: Build and Deploy Beta
-    runs-on: ubuntu-latest
+  version:
+    name: Generate beta version
+    runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # needs all tags to compute the next beta number
+          persist-credentials: false
 
-    - name: Scan for injected payloads (polin-guard)
-      run: npx --yes polin-guard@0.3.2 --ci
+      - name: Generate beta version
+        id: version
+        run: |
+          VERSION=$(.github/scripts/generate-version.sh beta)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::Generated beta version: $VERSION"
 
-    - name: Setup Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: ${{ env.GO_VERSION }}
-        cache: true
-    
-    - name: Cache build dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
+  build:
+    name: Build
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      channel: beta
 
-    - name: Generate beta version
-      id: version
-      run: |
-        chmod +x .github/scripts/generate-version.sh
-        VERSION=$(.github/scripts/generate-version.sh beta)
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "::notice::Generated beta version: $VERSION"
-    
-    - name: Build binary
-      run: |
-        make build VERSION=${{ steps.version.outputs.version }}
-        # Verify binary was created
-        test -f build/sc-metrics-agent || exit 1
+  publish:
+    name: Publish GitHub pre-release
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write      # create the tag and the release
+      id-token: write      # sign the build provenance
+      attestations: write  # store the attestation
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # changelog walks history since the last tag
+          persist-credentials: false
 
-    - name: Setup packaging environment
-      run: |
-        # Install FPM
-        sudo apt-get update -qq
-        sudo apt-get install -yqq ruby ruby-dev build-essential
-        sudo gem install --no-document fpm
-    
-    - name: Build package
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        ./.github/scripts/build-package.sh "$VERSION" "beta"
-        # Verify package was created
-        test -f "sc-metrics-agent_${VERSION}_amd64.deb" || exit 1
-    
-    - name: Generate changelog
-      id: changelog
-      run: |
-        chmod +x .github/scripts/generate-changelog.sh
-        {
-          echo 'changelog<<EOF'
-          .github/scripts/generate-changelog.sh beta
-          echo 'EOF'
-        } >> $GITHUB_OUTPUT
-    
-    - name: Create and push tag
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag -a "${{ steps.version.outputs.version }}" \
-          -m "Beta release ${{ steps.version.outputs.version }}"
-        git push origin "${{ steps.version.outputs.version }}"
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: dist
 
-    - name: Deploy to repository server
-      env:
-        DEPLOY_KEY: ${{ secrets.REPO_SSH_KEY }}
-        REPO_HOST: ${{ secrets.REPO_HOST }}
-        REPO_USER: ${{ secrets.REPO_USER }}
-      run: |
-        ./.github/scripts/deploy-to-repo.sh \
-          "${{ steps.version.outputs.version }}" \
-          "beta" \
-          "$DEPLOY_KEY" \
-          "$REPO_HOST" \
-          "$REPO_USER" \
-          "${{ github.ref }}" \
-          "${{ github.sha }}"
-    
-    - name: Create GitHub pre-release
-      uses: ncipollo/release-action@v1
-      with:
-        tag: ${{ steps.version.outputs.version }}
-        name: "Beta ${{ steps.version.outputs.version }}"
-        body: |
-          ## 🚀 Beta Release
-          
-          This is an automated beta release from the main branch.
-          
-          ${{ steps.changelog.outputs.changelog }}
-          
-          **⚠️ Note:** This is a beta release for testing purposes.
-        prerelease: true
-        artifacts: "sc-metrics-agent_*.deb"
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.deb
+
+      - name: Generate changelog
+        run: .github/scripts/generate-changelog.sh beta > release-notes.md
+
+      # The tag is created by the API at the exact commit that was built.
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$VERSION" dist/*.deb dist/packages.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "Beta $VERSION" \
+            --notes-file release-notes.md \
+            --prerelease

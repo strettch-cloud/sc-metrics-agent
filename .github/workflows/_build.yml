@@ -1,0 +1,87 @@
+# _build.yml - Scan, build and package both architectures.
+# Called by beta.yml and release.yml; never triggered on its own.
+# Holds no write token and no OIDC token: third-party code (npm, gems, Go
+# modules) runs here, so nothing in this file can publish or sign.
+name: Build Packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      channel:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Trust the repository's mise.toml without running `mise trust`.
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+  FPM_VERSION: '1.18.0'
+  PACKAGE_NAME: sc-metrics-agent
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  scan:
+    name: Scan for injected payloads
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # polin-guard --ci needs full history to see all tracked files
+          persist-credentials: false
+
+      # Runs in its own job so npm code never touches the build artifacts.
+      - name: Scan (polin-guard)
+        run: npx --yes polin-guard@0.3.2 --ci
+
+  build:
+    name: Build ${{ inputs.channel }} ${{ inputs.version }}
+    needs: scan
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No cache: release builds never reuse state another run could have written.
+      - name: Install toolchain (mise.toml)
+        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          version: 2026.10.11
+          sha256: f9612efcddda0ae55b62d3b6f82a6c860d5b54ebee0807d4f1a1d578055e1607
+          cache: false
+
+      - name: Install fpm
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq ruby ruby-dev build-essential
+          sudo gem install --no-document fpm -v "$FPM_VERSION"
+
+      - name: Build packages (amd64, arm64)
+        run: ./.github/scripts/build-all-packages.sh "$VERSION" "$CHANNEL"
+
+      - name: Verify packages
+        run: |
+          for arch in amd64 arm64; do
+            test -f "${PACKAGE_NAME}_${VERSION}_${arch}.deb"
+          done
+          cat packages.sha256
+
+      - name: Upload packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: |
+            *.deb
+            packages.sha256
+          if-no-files-found: error
+          retention-days: 1

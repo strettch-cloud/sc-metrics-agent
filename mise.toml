@@ -1,0 +1,93 @@
+# sc-metrics-agent toolchain and tasks. Run `mise install` once, then
+# `mise run <task>` (`mise tasks` lists them). CI runs the same tasks.
+
+[tools]
+go = "1.26.9"
+# Built from source with the pinned Go above (a prebuilt release binary can be
+# compiled with an older Go than the module targets and then fail to load the config).
+"go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "v2.12.2"
+# Security scanners used by scripts/security-scan.sh.
+"aqua:aquasecurity/trivy" = "0.70.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+
+[env]
+BINARY_NAME = "sc-metrics-agent"
+BUILD_DIR = "build"
+MAIN_PATH = "./cmd/agent"
+
+[tasks.deps]
+description = "Fetch Go modules"
+run = "go mod download"
+
+[tasks.build]
+description = "Build for GOOS/GOARCH (default: this machine). VERSION overrides git describe."
+depends = ["deps"]
+run = '''
+VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+mkdir -p "$BUILD_DIR"
+CGO_ENABLED=0 go build \
+  -ldflags "-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.buildTime=$BUILD_TIME" \
+  -o "$BUILD_DIR/$BINARY_NAME" "$MAIN_PATH"
+echo "Build complete: $BUILD_DIR/$BINARY_NAME"
+'''
+
+[tasks.package]
+description = "Build amd64 and arm64 .deb packages: mise run package <version> [channel]"
+run = '.github/scripts/build-all-packages.sh {{arg(name="version")}} {{arg(name="channel", default="stable")}}'
+
+[tasks.clean]
+run = "rm -rf $BUILD_DIR coverage.out coverage.html *.deb packages.sha256"
+
+[tasks.run]
+description = "Build and run the agent"
+depends = ["build"]
+run = "exec $BUILD_DIR/$BINARY_NAME"
+
+[tasks.run-debug]
+description = "Build and run the agent with debug logging"
+depends = ["build"]
+run = "SC_LOG_LEVEL=debug exec $BUILD_DIR/$BINARY_NAME"
+
+[tasks.docker]
+description = "Build the Docker image"
+run = '''
+VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
+docker build -t "$BINARY_NAME:$VERSION" -t "$BINARY_NAME:latest" .
+'''
+
+# ── quality ───────────────────────────────────────────────────────────────────
+
+[tasks.fmt]
+run = "golangci-lint fmt"
+
+[tasks.lint]
+description = "Check only (CI-safe)"
+depends = ["deps"]
+run = "golangci-lint run"
+
+[tasks.lint-fix]
+description = "Lint and auto-fix"
+run = "golangci-lint run --fix"
+
+[tasks.vet]
+run = "go vet ./..."
+
+[tasks.security-scan]
+description = "Trivy (dependencies) + govulncheck (reachable vulnerabilities)"
+run = "./scripts/security-scan.sh"
+
+# ── tests ─────────────────────────────────────────────────────────────────────
+
+[tasks.test]
+depends = ["deps"]
+run = "go test -race -coverprofile=coverage.out ./..."
+
+[tasks.test-coverage]
+description = "Tests plus an HTML coverage report in coverage.html"
+depends = ["test"]
+run = "go tool cover -html=coverage.out -o coverage.html"
+
+[tasks.bench]
+run = "go test -bench=. -benchmem ./..."

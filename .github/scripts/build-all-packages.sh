@@ -10,7 +10,7 @@ for arch in amd64 arm64; do
     echo "Building for $arch..."
     
     # Build binary for architecture
-    GOOS=linux GOARCH=$arch make build VERSION="$VERSION"
+    GOOS=linux GOARCH=$arch VERSION="$VERSION" mise run build
     
     # Build DEB
     ./.github/scripts/build-package.sh "$VERSION" "$CHANNEL" "$arch"

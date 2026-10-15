@@ -15,15 +15,16 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0 # polin-guard --ci needs full history to see all tracked files
+        persist-credentials: false
 
     - name: Scan for injected payloads (polin-guard)
       run: npx --yes polin-guard@0.3.2 --ci
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: '1.25.10'
         cache: true

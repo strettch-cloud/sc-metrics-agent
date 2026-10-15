@@ -1,0 +1,6 @@
+# Changes to CI, release scripts, packaging and the build need a maintainer's review.
+/.github/     @claranceliberi @dushimsam
+/packaging/   @claranceliberi @dushimsam
+/Makefile     @claranceliberi @dushimsam
+/go.mod       @claranceliberi @dushimsam
+/go.sum       @claranceliberi @dushimsam

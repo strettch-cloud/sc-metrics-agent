@@ -18,7 +18,8 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.9'
+  # Trust the repository's mise.toml without running `mise trust`.
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
   FPM_VERSION: '1.18.0'
   PACKAGE_NAME: sc-metrics-agent
   DEBIAN_FRONTEND: noninteractive
@@ -51,11 +52,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # No cache: release builds never reuse state another run could have written.
+      - name: Install toolchain (mise.toml)
+        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+          version: 2026.10.11
+          sha256: f9612efcddda0ae55b62d3b6f82a6c860d5b54ebee0807d4f1a1d578055e1607
+          cache: false
 
       - name: Install fpm
         run: |

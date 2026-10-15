@@ -8,57 +8,50 @@ on:
 permissions:
   contents: read
 
+env:
+  # Trust the repository's mise.toml without running `mise trust`.
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+
+# Go, golangci-lint, trivy and govulncheck are pinned in mise.toml; every step
+# below runs the same `mise run` task a developer runs locally.
 jobs:
   validation:
     name: Test, Lint & Build
-    runs-on: ubuntu-latest
-    
+    runs-on: ubuntu-24.04
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        fetch-depth: 0 # polin-guard --ci needs full history to see all tracked files
-        persist-credentials: false
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # polin-guard --ci needs full history to see all tracked files
+          persist-credentials: false
 
-    - name: Scan for injected payloads (polin-guard)
-      run: npx --yes polin-guard@0.3.2 --ci
+      - name: Scan for injected payloads (polin-guard)
+        run: npx --yes polin-guard@0.3.2 --ci
 
-    - name: Set up Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version: '1.26.9'
-        cache: true
+      - name: Install toolchain (mise.toml)
+        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          version: 2026.10.11
+          sha256: f9612efcddda0ae55b62d3b6f82a6c860d5b54ebee0807d4f1a1d578055e1607
 
-    - name: Run Trivy Vulnerability Scanner (SCA)
-      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'table'
-        exit-code: '1'
-        ignore-unfixed: true
-        severity: 'CRITICAL,HIGH'
-        skip-dirs: '.envs'
-        skip-files: '.env'
+      - name: Security scan (Trivy + govulncheck)
+        run: mise run security-scan
 
-    - name: Run govulncheck
-      run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: Run tests
+        run: mise run test
 
-    - name: Run tests
-      run: make test
+      - name: Lint
+        run: mise run lint
 
-    - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
-      with:
-        version: v2.12.2
-        working-directory: .
+      - name: Build for Linux AMD64
+        env:
+          GOOS: linux
+          GOARCH: amd64
+        run: mise run build
 
-    - name: Build for Linux AMD64
-      run: make GOOS=linux GOARCH=amd64 build
-
-    - name: Verify binary
-      run: |
-        ls -la build/
-        file build/sc-metrics-agent
-        ./build/sc-metrics-agent -v
-
+      - name: Verify binary
+        run: |
+          ls -la build/
+          file build/sc-metrics-agent
+          ./build/sc-metrics-agent -v

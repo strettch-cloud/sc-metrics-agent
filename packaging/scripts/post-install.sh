@@ -30,6 +30,16 @@ print_status() {
 
 echo "Configuring SC-Metrics-Agent..."
 
+# Refresh the APT keyring the repository source trusts (signed-by in
+# /etc/apt/sources.list.d/sc-metrics-agent.list). Done first so a later failure in
+# this script cannot leave the host unable to verify the next repository signing key.
+readonly PACKAGED_KEYRING="/usr/lib/sc-metrics-agent/apt-keyring.gpg"
+readonly APT_KEYRING="/usr/share/keyrings/sc-metrics-agent-keyring.gpg"
+if [ -f "$PACKAGED_KEYRING" ]; then
+    install -D -m 644 "$PACKAGED_KEYRING" "$APT_KEYRING"
+    print_status "info" "APT signing keyring updated"
+fi
+
 # Create necessary directories with proper ownership
 print_status "info" "Creating required directories..."
 install -d -m 750 "$RUNTIME_DIR"

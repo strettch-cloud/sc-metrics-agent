@@ -31,6 +31,10 @@ cp "packaging/systemd/${PACKAGE_NAME}.service" "${STAGING_DIR}/etc/systemd/syste
 cp "packaging/systemd/${PACKAGE_NAME}-update-scheduler.service" "${STAGING_DIR}/etc/systemd/system/"
 cp "packaging/systemd/${PACKAGE_NAME}-update-scheduler.timer" "${STAGING_DIR}/etc/systemd/system/"
 
+# APT keyring: post-install copies it over the one install.sh downloaded, so each
+# upgrade refreshes which repository signing keys the host trusts.
+./.github/scripts/build-keyring.sh "${STAGING_DIR}/usr/lib/${PACKAGE_NAME}/apt-keyring.gpg"
+
 # Build .deb package
 DESCRIPTION="SC Metrics Agent - System monitoring and metrics collection"
 [ "$CHANNEL" = "beta" ] && DESCRIPTION="$DESCRIPTION (Beta)"

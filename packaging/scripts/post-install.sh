@@ -30,14 +30,36 @@ print_status() {
 
 echo "Configuring SC-Metrics-Agent..."
 
-# Refresh the APT keyring the repository source trusts (signed-by in
-# /etc/apt/sources.list.d/sc-metrics-agent.list). Done first so a later failure in
-# this script cannot leave the host unable to verify the next repository signing key.
+# Refresh every APT keyring this host trusts for our repository: the path
+# install.sh writes, plus whatever signed-by points at in any APT source for
+# repo.cloud.strettch.com/metrics (older installers used other file names). Done
+# first so a later failure in this script cannot leave the host unable to verify
+# the next repository signing key.
 readonly PACKAGED_KEYRING="/usr/lib/sc-metrics-agent/apt-keyring.gpg"
-readonly APT_KEYRING="/usr/share/keyrings/sc-metrics-agent-keyring.gpg"
+readonly REPO_URL_RE='repo\.cloud\.strettch\.com/metrics'
+
+repo_keyrings() {
+    echo "/usr/share/keyrings/sc-metrics-agent-keyring.gpg"
+    # One-line sources: deb [signed-by=/a.gpg,/b.gpg] https://repo.cloud.strettch.com/metrics/...
+    grep -hE "^[[:space:]]*deb[[:space:]].*${REPO_URL_RE}" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null \
+        | grep -oE 'signed-by=[^] ]+' | cut -d= -f2 | tr ',' '\n' || true
+    # deb822 sources: a Signed-By field in a stanza whose URIs name the repository.
+    awk -v RS= -v re="$REPO_URL_RE" 'tolower($0) ~ /uris:/ && $0 ~ re' /etc/apt/sources.list.d/*.sources 2>/dev/null \
+        | sed -nE 's/^[Ss]igned-[Bb]y:[[:space:]]*(\/[^[:space:]]+)$/\1/p' | tr ',' '\n' || true
+}
+
 if [ -f "$PACKAGED_KEYRING" ]; then
-    install -D -m 644 "$PACKAGED_KEYRING" "$APT_KEYRING"
-    print_status "info" "APT signing keyring updated"
+    repo_keyrings | sort -u | while read -r keyring; do
+        case "$keyring" in
+            *..*) print_status "warning" "Skipping APT keyring path with '..': $keyring" ;;
+            /usr/share/keyrings/*.gpg|/etc/apt/keyrings/*.gpg)
+                install -D -m 644 "$PACKAGED_KEYRING" "$keyring"
+                print_status "info" "APT signing keyring updated: $keyring"
+                ;;
+            # A binary keyring written over an armored .asc, or anywhere else, would break APT.
+            *) print_status "warning" "Not updating APT keyring outside the keyring directories: $keyring" ;;
+        esac
+    done
 fi
 
 # Create necessary directories with proper ownership

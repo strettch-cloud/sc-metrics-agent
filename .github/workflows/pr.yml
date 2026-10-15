@@ -41,8 +41,8 @@ jobs:
         skip-dirs: '.envs'
         skip-files: '.env'
 
-    - name: Run Govulncheck
-      uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
+    - name: Run govulncheck
+      run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
     - name: Run tests
       run: make test

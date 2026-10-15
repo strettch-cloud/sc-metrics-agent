@@ -1,7 +1,6 @@
 # beta.yml - Beta Release Workflow
 # Every merge to main produces a beta GitHub pre-release with signed build
-# provenance. Publishing to the APT repository is a separate, manual step in
-# the private release repository; nothing here can reach the repo server.
+# provenance.
 name: Beta Release
 
 on:
@@ -13,9 +12,12 @@ on:
 
 permissions: {}
 
-# Shared with release.yml so two runs can never compute the same tag.
+# Betas run one at a time so two runs never compute the same beta number. GitHub
+# keeps one pending run per group, so a newer push replaces a queued beta; that is
+# safe because the newer run includes its commits. Stable releases use their own
+# group so a beta can never cancel a queued one.
 concurrency:
-  group: release
+  group: release-beta
   cancel-in-progress: false
 
 jobs:

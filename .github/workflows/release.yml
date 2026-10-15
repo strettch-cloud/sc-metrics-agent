@@ -1,7 +1,6 @@
 # release.yml - Stable Release Workflow
 # Manually dispatched from main. Produces a stable GitHub release with signed
-# build provenance. Publishing to the APT repository is a separate, manual step
-# in the private release repository; nothing here can reach the repo server.
+# build provenance.
 name: Stable Release
 
 on:
@@ -19,9 +18,11 @@ on:
 
 permissions: {}
 
-# Shared with beta.yml so two runs can never compute the same tag.
+# Stable releases run one at a time so two runs never publish the same tag. Kept
+# separate from beta.yml: GitHub keeps one pending run per group, so a shared
+# group would let a beta push cancel a queued stable release.
 concurrency:
-  group: release
+  group: release-stable
   cancel-in-progress: false
 
 jobs:

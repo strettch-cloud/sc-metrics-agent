@@ -1,8 +1,7 @@
 # CI and Releases
 
-This repository builds, tests and packages the agent. It does **not** publish to the APT
-repository: that is a manual step in a separate private release repository, so nothing in
-this repository holds credentials for the repository server.
+This repository builds, tests and packages the agent, and publishes the `.deb` packages
+as GitHub releases.
 
 ## Workflows
 

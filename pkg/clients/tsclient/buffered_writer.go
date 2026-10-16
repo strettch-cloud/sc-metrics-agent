@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/strettch/sc-metrics-agent/pkg/aggregate"
-	"github.com/strettch/sc-metrics-agent/pkg/buffer"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/aggregate"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/buffer"
 	"go.uber.org/zap"
 )
 

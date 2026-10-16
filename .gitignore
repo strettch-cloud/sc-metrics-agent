@@ -1,2 +1,4 @@
 build
 coverage.*
+# macOS
+.DS_Store

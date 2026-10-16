@@ -13,7 +13,7 @@ import (
 	"github.com/prometheus/procfs"
 	"github.com/prometheus/procfs/blockdevice"
 	"go.uber.org/zap"
-	"github.com/strettch/sc-metrics-agent/pkg/config"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
 )
 
 // ignoredFSTypes lists filesystem types to exclude from metrics collection

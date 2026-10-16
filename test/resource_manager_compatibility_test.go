@@ -12,11 +12,11 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 
-	"github.com/strettch/sc-metrics-agent/pkg/aggregate"
-	"github.com/strettch/sc-metrics-agent/pkg/clients/metadata"
-	"github.com/strettch/sc-metrics-agent/pkg/clients/tsclient"
-	"github.com/strettch/sc-metrics-agent/pkg/config"
-	"github.com/strettch/sc-metrics-agent/test/helpers"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/aggregate"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/clients/metadata"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/clients/tsclient"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
+	"github.com/strettch-cloud/sc-metrics-agent/test/helpers"
 )
 
 // createTestClient creates a test client for integration testing

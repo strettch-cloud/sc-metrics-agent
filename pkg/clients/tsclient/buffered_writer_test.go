@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/strettch/sc-metrics-agent/pkg/aggregate"
-	"github.com/strettch/sc-metrics-agent/pkg/buffer"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/aggregate"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/buffer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"

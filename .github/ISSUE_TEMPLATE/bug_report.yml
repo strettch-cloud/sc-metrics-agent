@@ -1,0 +1,40 @@
+name: Bug report
+description: Something in sc-metrics-agent does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Security issues go through private reporting, see SECURITY.md. Do not include tokens, keys or other secrets from your logs.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Agent version
+      description: Output of `sc-metrics-agent -v`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: Ubuntu 24.04, amd64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output of `journalctl -u sc-metrics-agent`
+      render: text

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/snappy"
-	"github.com/strettch/sc-metrics-agent/pkg/aggregate"
-	"github.com/strettch/sc-metrics-agent/pkg/clients/metadata"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/aggregate"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/clients/metadata"
 	"go.uber.org/zap"
 )
 

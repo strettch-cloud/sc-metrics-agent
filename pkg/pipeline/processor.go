@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/strettch/sc-metrics-agent/pkg/aggregate"
-	"github.com/strettch/sc-metrics-agent/pkg/clients/metadata"
-	"github.com/strettch/sc-metrics-agent/pkg/clients/tsclient"
-	"github.com/strettch/sc-metrics-agent/pkg/collector"
-	"github.com/strettch/sc-metrics-agent/pkg/config"
-	"github.com/strettch/sc-metrics-agent/pkg/decorator"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/aggregate"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/clients/metadata"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/clients/tsclient"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/collector"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/decorator"
 	"go.uber.org/zap"
 )
 

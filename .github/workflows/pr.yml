@@ -29,6 +29,17 @@ jobs:
       - name: Scan for injected payloads (polin-guard)
         run: npx --yes polin-guard@0.3.2 --ci
 
+      # Release builds package this keyring; build it here so an unreadable key
+      # file in packaging/keys fails the PR, not beta.yml.
+      - name: Build APT keyring
+        run: ./.github/scripts/build-keyring.sh "$RUNNER_TEMP/apt-keyring.gpg"
+
+      - name: Check APT keys match sc-agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: ./.github/scripts/check-keys-sync.sh strettch-cloud/sc-agent "$HEAD_REF"
+
       - name: Install toolchain (mise.toml)
         uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:

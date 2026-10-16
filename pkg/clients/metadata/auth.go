@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"github.com/strettch/sc-metrics-agent/pkg/config"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
 )
 
 // AuthManager handles periodic token refresh for metadata service authentication.

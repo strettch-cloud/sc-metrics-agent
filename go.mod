@@ -1,4 +1,4 @@
-module github.com/strettch/sc-metrics-agent
+module github.com/strettch-cloud/sc-metrics-agent
 
 go 1.25
 

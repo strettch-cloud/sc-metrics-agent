@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/strettch/sc-metrics-agent/pkg/config"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
 )
 
 const skipMessageNonLinuxValidation = "Skipping test on non-Linux system"

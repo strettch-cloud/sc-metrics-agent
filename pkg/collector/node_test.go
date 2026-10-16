@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
-	"github.com/strettch/sc-metrics-agent/pkg/config"
+	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
 )
 
 const skipMessageNonLinux = "Skipping test on non-Linux system"

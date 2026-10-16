@@ -50,14 +50,6 @@ description = "Build and run the agent with debug logging"
 depends = ["build"]
 run = "SC_LOG_LEVEL=debug exec $BUILD_DIR/$BINARY_NAME"
 
-[tasks.docker]
-description = "Build the Docker image"
-run = '''
-VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
-docker build -t "$BINARY_NAME:$VERSION" -t "$BINARY_NAME:latest" .
-'''
-
-# ── quality ───────────────────────────────────────────────────────────────────
 
 [tasks.fmt]
 run = "golangci-lint fmt"

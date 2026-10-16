@@ -1,5 +1,8 @@
 # SC Metrics Agent Configuration
-# Copy this file to config.yaml and customize for your environment
+# Point SC_AGENT_CONFIG at a copy of this file. It replaces
+# /etc/strettchcloud/config/agent.yaml, so it must keep metadata_service.base_url.
+metadata_service:
+  base_url: "http://<metadata-service-host>:8000"
 
 # Collection settings
 collection_interval: 30s

@@ -23,8 +23,9 @@ to the platform, where it powers the metrics shown for each VM.
    labels.
 3. **Aggregate** them into batches.
 4. **Write** each batch, snappy-compressed, to the Strettch Cloud API. If the API cannot be
-   reached, batches are kept in an on-disk buffer (`/var/lib/sc-metrics-agent/buffer`) and sent
-   when it is back.
+   reached, batches are kept in an on-disk buffer (`/var/lib/sc-metrics-agent/buffer`, capped at
+   10 MB, roughly 16–40 hours of data) and sent when it is back. Once the buffer is full, newer
+   batches are dropped, so a longer outage leaves a gap in the metrics.
 
 The agent holds no secrets on disk: it gets a short-lived token and the API address from the
 link-local metadata service.
@@ -48,7 +49,7 @@ and the code under [`pkg/collector/`](pkg/collector/).
 On an Ubuntu VM, as root:
 
 ```bash
-curl -sSL https://repo.cloud.strettch.com/metrics/install.sh | sudo sh
+curl -sSL https://repo.cloud.strettch.com/metrics/install.sh | sudo bash
 ```
 
 This adds the signed APT repository, installs the package and starts two systemd units:
@@ -87,7 +88,7 @@ To override a setting, add it to `/etc/sc-metrics-agent/environment` and restart
 | `SC_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `SC_VM_ID` | from `dmidecode` | Set this if `dmidecode -s system-uuid` returns nothing on your VM |
 | `SC_COLLECTOR_<NAME>` | `true` | Turn one collector group off, e.g. `SC_COLLECTOR_THERMAL=false` |
-| `SC_AGENT_CONFIG` | — | Path to a YAML file with settings from [`config.example.yaml`](config.example.yaml) |
+| `SC_AGENT_CONFIG` | — | Path to a YAML file used *instead of* `/etc/strettchcloud/config/agent.yaml`. It must contain `metadata_service.base_url` (copy it from that file) and may add any setting from [`config.example.yaml`](config.example.yaml). |
 
 ## Verifying packages
 
@@ -112,7 +113,8 @@ mise run security-scan # Trivy + govulncheck
 ```
 
 Run a local build with `sudo ./build/sc-metrics-agent`; `-validate-config <file>` checks a
-configuration file and exits. How CI builds and publishes releases is described in
+configuration file and exits. The file must contain `metadata_service.base_url`, as described for
+`SC_AGENT_CONFIG` above. How CI builds and publishes releases is described in
 [.github/README.md](.github/README.md).
 
 ## Contributing and security

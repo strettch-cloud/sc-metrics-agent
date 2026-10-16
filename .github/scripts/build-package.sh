@@ -35,6 +35,10 @@ cp "packaging/systemd/${PACKAGE_NAME}-update-scheduler.timer" "${STAGING_DIR}/et
 # upgrade refreshes which repository signing keys the host trusts.
 ./.github/scripts/build-keyring.sh "${STAGING_DIR}/usr/lib/${PACKAGE_NAME}/apt-keyring.gpg"
 
+# License terms travel with the binary.
+install -D -m 644 LICENSE "${STAGING_DIR}/usr/share/doc/${PACKAGE_NAME}/LICENSE"
+install -D -m 644 NOTICE "${STAGING_DIR}/usr/share/doc/${PACKAGE_NAME}/NOTICE"
+
 # Build .deb package
 DESCRIPTION="SC Metrics Agent - System monitoring and metrics collection"
 [ "$CHANNEL" = "beta" ] && DESCRIPTION="$DESCRIPTION (Beta)"

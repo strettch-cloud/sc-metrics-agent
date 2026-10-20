@@ -52,6 +52,9 @@ jobs:
       - name: Run tests
         run: mise run test
 
+      - name: Coverage report (run summary)
+        run: .github/scripts/coverage-report.sh coverage.out >> "$GITHUB_STEP_SUMMARY"
+
       - name: Lint
         run: mise run lint
 

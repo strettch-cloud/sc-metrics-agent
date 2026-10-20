@@ -85,15 +85,18 @@ run = "./scripts/security-scan.sh"
 description = "Tests with the race detector; coverage in coverage.out, total printed last"
 depends = ["deps"]
 run = '''
+set -e
 # -coverpkg=./... credits a test with every package it runs, not only its own,
 # so integration tests count toward the code they exercise.
 go test -race -coverpkg=./... -coverprofile=coverage-raw.out ./...
 # coverage.out is coverage-raw.out minus the files .coverageignore lists.
+# Blank and comment lines are skipped: a blank pattern would match every line.
 patterns=$(mktemp)
-grep -vE '^#|^$' .coverageignore > "$patterns" || true
+trap 'rm -f "$patterns"' EXIT
+grep -vE '^[[:space:]]*(#|$)' .coverageignore > "$patterns" || [ $? -eq 1 ]
 head -n 1 coverage-raw.out > coverage.out
-tail -n +2 coverage-raw.out | grep -vE -f "$patterns" >> coverage.out || true
-rm -f "$patterns"
+# grep exits 1 when no line is left, which is fine, and 2 on an invalid pattern.
+tail -n +2 coverage-raw.out | grep -vE -f "$patterns" >> coverage.out || [ $? -eq 1 ]
 go tool cover -func=coverage.out | tail -n 1
 '''
 

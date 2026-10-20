@@ -1,7 +1,10 @@
 # Files left out of the coverage total, read by `mise run test`.
 #
-# One regular expression per line, matched against each file path in the Go
-# coverage profile. Lines starting with # and empty lines are ignored.
+# One extended regular expression per line. Each is matched anywhere in each
+# line of the Go coverage profile, and a profile line starts with the file's
+# import path, e.g. github.com/strettch-cloud/sc-metrics-agent/cmd/agent/main.go:45.13,48.2 1 0
+# so `cmd/agent/main\.go:` leaves out that one file. Blank lines and lines
+# starting with # are ignored.
 # coverage-raw.out keeps everything, so what was left out can be checked.
 #
 # Every entry needs a comment above it saying why that file cannot be tested.

@@ -21,6 +21,6 @@ for arch in amd64 arm64; do
 done
 
 # Generate checksums
-sha256sum *.deb > packages.sha256
+sha256sum -- *.deb > packages.sha256
 
 echo "All packages built successfully"

@@ -38,6 +38,8 @@ fi
 
 # Detect specific distribution and version for better error messages
 if [ -f /etc/os-release ]; then
+    # Only exists on the machine being installed on, so shellcheck cannot read it.
+    # shellcheck source=/dev/null
     . /etc/os-release
     echo "Detected OS: ${NAME} ${VERSION_ID}"
 fi

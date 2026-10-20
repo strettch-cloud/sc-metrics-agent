@@ -38,7 +38,7 @@ description = "Build amd64 and arm64 .deb packages: mise run package <version> [
 run = '.github/scripts/build-all-packages.sh {{arg(name="version")}} {{arg(name="channel", default="stable")}}'
 
 [tasks.clean]
-run = "rm -rf $BUILD_DIR coverage.out coverage.html *.deb packages.sha256"
+run = "rm -rf $BUILD_DIR coverage.out coverage-raw.out coverage.html *.deb packages.sha256"
 
 [tasks.run]
 description = "Build and run the agent"
@@ -73,8 +73,20 @@ run = "./scripts/security-scan.sh"
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 [tasks.test]
+description = "Tests with the race detector; coverage in coverage.out, total printed last"
 depends = ["deps"]
-run = "go test -race -coverprofile=coverage.out ./..."
+run = '''
+# -coverpkg=./... credits a test with every package it runs, not only its own,
+# so integration tests count toward the code they exercise.
+go test -race -coverpkg=./... -coverprofile=coverage-raw.out ./...
+# coverage.out is coverage-raw.out minus the files .coverageignore lists.
+patterns=$(mktemp)
+grep -vE '^#|^$' .coverageignore > "$patterns" || true
+head -n 1 coverage-raw.out > coverage.out
+tail -n +2 coverage-raw.out | grep -vE -f "$patterns" >> coverage.out || true
+rm -f "$patterns"
+go tool cover -func=coverage.out | tail -n 1
+'''
 
 [tasks.test-coverage]
 description = "Tests plus an HTML coverage report in coverage.html"

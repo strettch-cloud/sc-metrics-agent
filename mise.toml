@@ -97,7 +97,9 @@ grep -vE '^[[:space:]]*(#|$)' .coverageignore > "$patterns" || [ $? -eq 1 ]
 head -n 1 coverage-raw.out > coverage.out
 # grep exits 1 when no line is left, which is fine, and 2 on an invalid pattern.
 tail -n +2 coverage-raw.out | grep -vE -f "$patterns" >> coverage.out || [ $? -eq 1 ]
-go tool cover -func=coverage.out | tail -n 1
+# Assigned first: in a pipeline, set -e would only see tail's exit status.
+coverage_report=$(go tool cover -func=coverage.out)
+printf '%s\n' "$coverage_report" | tail -n 1
 '''
 
 [tasks.test-coverage]

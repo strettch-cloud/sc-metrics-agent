@@ -9,6 +9,8 @@ go = "1.26.9"
 # Security scanners used by scripts/security-scan.sh.
 "aqua:aquasecurity/trivy" = "0.70.0"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+# Lints the shell scripts the package ships and CI runs (lint-packaging).
+"aqua:koalaman/shellcheck" = "0.11.0"
 
 [env]
 BINARY_NAME = "sc-metrics-agent"
@@ -62,6 +64,13 @@ run = "golangci-lint run"
 [tasks.lint-fix]
 description = "Lint and auto-fix"
 run = "golangci-lint run --fix"
+
+[tasks.lint-packaging]
+description = "shellcheck every script, and check the systemd units (CI-safe)"
+run = """
+shellcheck packaging/scripts/*.sh .github/scripts/*.sh
+.github/scripts/verify-units.sh packaging/systemd
+"""
 
 [tasks.vet]
 run = "go vet ./..."

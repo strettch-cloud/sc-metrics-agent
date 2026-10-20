@@ -171,7 +171,7 @@ fi
 # Verify services are running (only if we started them)
 if [ "${SC_AGENT_AUTO_UPDATER:-0}" != "1" ]; then
     # Allow some time for service to fully activate
-    for i in {1..5}; do
+    for _ in {1..5}; do
         MAIN_STATUS=$(systemctl is-active "${SERVICE_NAME}" 2>/dev/null || echo "inactive")
         if [ "$MAIN_STATUS" = "active" ] || [ "$MAIN_STATUS" = "activating" ]; then
             break

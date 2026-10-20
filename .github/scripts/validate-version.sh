@@ -12,7 +12,6 @@ LAST_STABLE=$(git tag -l --sort=-version:refname | \
 
 # Parse versions
 IFS='.' read -r last_major last_minor last_patch <<< "$LAST_STABLE"
-IFS='.' read -r new_major new_minor new_patch <<< "$NEW_VERSION"
 
 # Calculate expected version
 case "$RELEASE_TYPE" in

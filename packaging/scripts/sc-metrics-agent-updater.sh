@@ -26,8 +26,9 @@ fi
 log() {
     local level=$1
     shift
-    local message="$@"
-    local timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+    local message="$*"
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
     
     # Use appropriate output stream
     case $level in
@@ -41,6 +42,7 @@ log() {
 }
 
 # Cleanup function (preserving original atomic lock approach)
+# shellcheck disable=SC2329 # called from the trap below, which shellcheck does not follow
 cleanup() {
     rmdir "${LOCK_FILE}" 2>/dev/null || true
 }
@@ -94,7 +96,10 @@ apt_update_agent_only() {
 
 # Function to check package health
 check_package_health() {
-    local status=$(dpkg -l ${PACKAGE_NAME} 2>/dev/null | grep "^[ih]" | awk '{print $1}')
+    local status
+    # An empty status is handled below as "not found", so a failing pipeline
+    # must not stop the script here under set -e.
+    status=$(dpkg -l ${PACKAGE_NAME} 2>/dev/null | grep "^[ih]" | awk '{print $1}') || true
     
     if [[ -z "$status" ]]; then
         log "ERROR" "Package not found in dpkg database"
@@ -136,6 +141,10 @@ repair_package() {
 }
 
 # Check and repair package if needed
+# TODO(SC-577): under set -e, a non-zero return exits the script on this line, so
+# HEALTH_STATUS and the repair branch below never run. Use
+# `HEALTH_STATUS=0; check_package_health || HEALTH_STATUS=$?` once the lifecycle
+# test for a half-installed package exists to prove the repair path.
 check_package_health
 HEALTH_STATUS=$?
 
@@ -166,7 +175,7 @@ for attempt in $(seq 1 ${MAX_RETRIES}); do
         log "INFO" "Package list update successful"
         break
     else
-        if [ ${attempt} -lt ${MAX_RETRIES} ]; then
+        if [ "${attempt}" -lt "${MAX_RETRIES}" ]; then
             log "WARN" "Package list update failed, retrying in ${RETRY_DELAY}s..."
             sleep ${RETRY_DELAY}
         else
@@ -237,7 +246,7 @@ for attempt in $(seq 1 ${MAX_RETRIES}); do
         log "ERROR" "Installation attempt ${attempt} failed"
     fi
     
-    if [ ${attempt} -lt ${MAX_RETRIES} ]; then
+    if [ "${attempt}" -lt "${MAX_RETRIES}" ]; then
         log "INFO" "Retrying in ${RETRY_DELAY}s..."
         sleep ${RETRY_DELAY}
         

@@ -55,6 +55,9 @@ jobs:
       - name: Lint
         run: mise run lint
 
+      - name: Lint packaging (shellcheck, systemd units)
+        run: mise run lint-packaging
+
       - name: Build for Linux AMD64
         env:
           GOOS: linux

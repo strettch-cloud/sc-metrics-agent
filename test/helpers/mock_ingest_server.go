@@ -16,6 +16,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// Content types the resource manager accepts. They are spelled out here rather
+// than taken from the agent's tsclient: the fake stands for the server, so a
+// wrong value in the agent must fail the tests, not be accepted by both.
+const (
+	contentTypeTimeseriesBinary = "application/timeseries-binary-0"
+	contentTypeTimeseriesBatch  = "application/timeseries-batch-v1"
+)
+
 // TimeseriesMetric represents the expected format from the agent
 type TimeseriesMetric struct {
 	Name      string            `json:"name"`
@@ -254,10 +262,10 @@ func (m *MockIngestServer) handleIngest(w http.ResponseWriter, r *http.Request) 
 
 	// Handle different content types (matching resource-manager switch statement)
 	switch {
-	case strings.Contains(contentType, "application/timeseries-binary-0"):
+	case strings.Contains(contentType, contentTypeTimeseriesBinary):
 		response := m.handleTimeseriesMetrics(decompressedBody, &request)
 		m.sendResponse(w, response)
-	case strings.Contains(contentType, "application/timeseries-batch-v1"):
+	case strings.Contains(contentType, contentTypeTimeseriesBatch):
 		// The running agent sends this format: its disk buffer drains batches in one envelope.
 		if contentEncoding == "snappy" {
 			http.Error(w, "Envelope must not be snappy-encoded", http.StatusBadRequest)
@@ -426,11 +434,11 @@ func (m *MockIngestServer) ValidateRequest(request IngestRequest) []string {
 	// The running agent drains its disk buffer as a plain JSON batch-v1
 	// envelope; a direct send is snappy-encoded binary-0.
 	switch request.ContentType {
-	case "application/timeseries-batch-v1":
+	case contentTypeTimeseriesBatch:
 		if request.ContentEncoding != "" {
 			issues = append(issues, fmt.Sprintf("Expected no content-encoding on a batch envelope, got '%s'", request.ContentEncoding))
 		}
-	case "application/timeseries-binary-0":
+	case contentTypeTimeseriesBinary:
 		if request.ContentEncoding != "snappy" {
 			issues = append(issues, fmt.Sprintf("Expected content-encoding 'snappy', got '%s'", request.ContentEncoding))
 		}
@@ -480,6 +488,16 @@ type MockMetadataServer struct {
 	server      *httptest.Server
 	cloudAPIURL string
 	logger      *zap.Logger
+
+	mutex        sync.Mutex
+	issuedTokens []string
+}
+
+// IssuedTokens returns every token handed out so far.
+func (m *MockMetadataServer) IssuedTokens() []string {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return append([]string(nil), m.issuedTokens...)
 }
 
 // NewMockMetadataServer creates a new mock metadata server
@@ -525,8 +543,12 @@ func (m *MockMetadataServer) handleRequest(w http.ResponseWriter, r *http.Reques
 // handleTokenRequest simulates the metadata service auth token endpoint
 func (m *MockMetadataServer) handleTokenRequest(w http.ResponseWriter, r *http.Request) {
 	// Simulate the metadata service response format
+	token := "mock-test-token-" + time.Now().Format("20060102150405")
+	m.mutex.Lock()
+	m.issuedTokens = append(m.issuedTokens, token)
+	m.mutex.Unlock()
 	response := map[string]interface{}{
-		"token":       "mock-test-token-" + time.Now().Format("20060102150405"),
+		"token":       token,
 		"cloudAPIUrl": m.cloudAPIURL,
 	}
 

@@ -29,7 +29,7 @@ func createTestClient(endpoint string, logger *zap.Logger) *tsclient.Client {
 	mockMetadataServer := helpers.NewMockMetadataServer(baseURL, logger)
 	
 	cfg := &config.Config{
-		MetadataServiceEndpoint: mockMetadataServer.URL() + "/auth/token",
+		MetadataServiceEndpoint: mockMetadataServer.URL() + "/metadata/v1/auth-token",
 		HTTPTimeout:            30 * time.Second,
 		VMID:                   "test-vm-id",
 	}

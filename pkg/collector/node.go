@@ -208,8 +208,8 @@ func (sc *SystemCollector) Collect(ctx context.Context) ([]*dto.MetricFamily, er
 	sc.logger.Debug("Starting metric collection")
 	start := time.Now()
 
-	// Gather returns what it could collect along with the error, so a collector
-	// that fails costs only its own metrics, not the CPU and memory ones too.
+	// Gather drops only the series it rejects and returns the rest with the
+	// error, so one bad series doesn't cost the CPU and memory metrics too.
 	metricFamilies, err := sc.registry.Gather()
 	if err != nil {
 		if len(metricFamilies) == 0 {
@@ -521,12 +521,26 @@ func (c *filesystemCollector) Collect(ch chan<- prometheus.Metric) {
 
 	// A path can be mounted more than once, for example a bind mount on top of
 	// itself or a second disk over the first. statfs only sees the top mount,
-	// which mountinfo lists last, so each path is reported once, for that mount.
-	// Reporting it twice with the same labels would make the whole Gather fail.
+	// so each path is reported once, for that mount: reporting it twice with
+	// the same labels would make the whole Gather fail. mountinfo's order can't
+	// tell which mount is on top (mount --move keeps a mount's old place), but
+	// a mount stacked on a path is a child of the one it hides, so a mount that
+	// is the parent of another mount on the same path is hidden. The root of a
+	// mount namespace lists itself as its own parent, which hides nothing.
+	type mountOnPath struct {
+		mountPoint string
+		mountID    int
+	}
+	hiddenMounts := make(map[mountOnPath]bool)
+	for _, mount := range mounts {
+		if mount.ParentID != mount.MountID {
+			hiddenMounts[mountOnPath{mount.MountPoint, mount.ParentID}] = true
+		}
+	}
+
 	reportedMountPoints := make(map[string]bool)
-	for i := len(mounts) - 1; i >= 0; i-- {
-		mount := mounts[i]
-		if reportedMountPoints[mount.MountPoint] {
+	for _, mount := range mounts {
+		if hiddenMounts[mountOnPath{mount.MountPoint, mount.MountID}] || reportedMountPoints[mount.MountPoint] {
 			continue
 		}
 		reportedMountPoints[mount.MountPoint] = true

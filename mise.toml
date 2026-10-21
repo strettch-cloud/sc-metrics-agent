@@ -84,6 +84,9 @@ run = "./scripts/security-scan.sh"
 [tasks.test]
 description = "Tests with the race detector; coverage in coverage.out, total printed last"
 depends = ["deps"]
+# The run fails when total coverage drops below this. Raise it with every pull
+# request that adds tests, until it reaches the 98 target.
+env = { COVERAGE_MINIMUM = "53.5" }
 run = '''
 set -e
 # -coverpkg=./... credits a test with every package it runs, not only its own,
@@ -100,6 +103,11 @@ tail -n +2 coverage-raw.out | grep -vE -f "$patterns" >> coverage.out || [ $? -e
 # Assigned first: in a pipeline, set -e would only see tail's exit status.
 coverage_report=$(go tool cover -func=coverage.out)
 printf '%s\n' "$coverage_report" | tail -n 1
+total=$(printf '%s\n' "$coverage_report" | awk '$1 == "total:" { sub(/%$/, "", $NF); print $NF }')
+if awk -v total="$total" -v minimum="$COVERAGE_MINIMUM" 'BEGIN { exit !(total < minimum) }'; then
+  echo "Coverage ${total}% is below the minimum of ${COVERAGE_MINIMUM}% set in mise.toml." >&2
+  exit 1
+fi
 '''
 
 [tasks.test-coverage]

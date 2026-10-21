@@ -52,7 +52,10 @@ jobs:
       - name: Run tests
         run: mise run test
 
+      # Also runs when the tests fail on the coverage minimum, so the summary
+      # shows which package lost coverage.
       - name: Coverage report (run summary)
+        if: ${{ !cancelled() && hashFiles('coverage.out') != '' }}
         run: .github/scripts/coverage-report.sh coverage.out >> "$GITHUB_STEP_SUMMARY"
 
       - name: Lint

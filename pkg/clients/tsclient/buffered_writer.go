@@ -36,7 +36,7 @@ type BufferedMetricWriter struct {
 }
 
 // NewBufferedMetricWriter wraps a *Client with a disk-backed queue.
-// The aux writer carries diagnostics and heartbeats unbuffered.
+// The aux writer carries heartbeats unbuffered.
 func NewBufferedMetricWriter(
 	client *Client,
 	queue *buffer.DiskQueue,
@@ -152,11 +152,6 @@ func (bw *BufferedMetricWriter) drain(ctx context.Context, authToken string) err
 		zap.Int("buffered_bytes", bw.queue.Bytes()),
 	)
 	return nil
-}
-
-// WriteDiagnostics delegates to the underlying writer; diagnostics are not buffered.
-func (bw *BufferedMetricWriter) WriteDiagnostics(ctx context.Context, agentID string, status string, lastError string, collectorStatus map[string]bool, authToken string) error {
-	return bw.aux.WriteDiagnostics(ctx, agentID, status, lastError, collectorStatus, authToken)
 }
 
 // SendHeartbeat delegates to the underlying writer; heartbeats are not buffered.

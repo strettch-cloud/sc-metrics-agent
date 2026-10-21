@@ -128,22 +128,3 @@ func (md *metricDecorator) decorateMetric(metric *dto.Metric) (*dto.Metric, erro
 func stringPtr(s string) *string {
 	return &s
 }
-
-// GetVMID returns the configured VM ID
-func (md *metricDecorator) GetVMID() string {
-	return md.vmID
-}
-
-// GetLabels returns a copy of the configured labels
-func (md *metricDecorator) GetLabels() map[string]string {
-	labels := make(map[string]string)
-	for k, v := range md.labels {
-		labels[k] = v
-	}
-	return labels
-}
-
-// SetLogger updates the logger for this decorator
-func (md *metricDecorator) SetLogger(logger *zap.Logger) {
-	md.logger = logger
-}

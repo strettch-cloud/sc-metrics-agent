@@ -185,11 +185,12 @@ func (box *container) mustExec(t *testing.T, command ...string) string {
 
 // configureAgent sets what a real VM provides another way: the VM ID, which
 // dmidecode reads on a VM, and a short collection interval so the test doesn't
-// wait 30 s. The unit reads this file through EnvironmentFile.
+// wait 30 s. It uses a systemd drop-in rather than /etc/sc-metrics-agent, so
+// the package still has to create that directory itself.
 func (box *container) configureAgent(t *testing.T) {
 	t.Helper()
-	box.mustExec(t, "mkdir", "-p", "/etc/sc-metrics-agent")
-	box.mustExec(t, "sh", "-c", "printf 'SC_VM_ID="+testVMID+"\\nSC_COLLECTION_INTERVAL=2s\\n' > /etc/sc-metrics-agent/environment")
+	box.mustExec(t, "mkdir", "-p", "/etc/systemd/system/"+agentService+".d")
+	box.mustExec(t, "sh", "-c", "printf '[Service]\\nEnvironment=SC_VM_ID="+testVMID+"\\nEnvironment=SC_COLLECTION_INTERVAL=2s\\n' > /etc/systemd/system/"+agentService+".d/lifecycle-test.conf")
 }
 
 // install installs a package the way an operator does, with post-install
@@ -277,6 +278,10 @@ func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 	})
 
 	t.Run("apt remove stops it and keeps the configuration", func(t *testing.T) {
+		box.mustExec(t, "sh", "-c", "echo '# an operator edit apt remove must keep' >> /etc/sc-metrics-agent/config.yaml")
+		agentConfigBefore := box.mustExec(t, "cat", "/etc/sc-metrics-agent/config.yaml")
+		agentYAMLBefore := box.mustExec(t, "cat", "/etc/strettchcloud/config/agent.yaml")
+
 		output, exitCode := box.exec(t, []string{"DEBIAN_FRONTEND=noninteractive"}, "apt-get", "remove", "--yes", "sc-metrics-agent")
 		require.Equal(t, 0, exitCode, output)
 		active, enabled := box.unitState(t, agentService)
@@ -287,8 +292,8 @@ func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 		assert.NotEqual(t, "enabled", enabled)
 		_, exitCode = box.exec(t, nil, "test", "-e", "/usr/bin/sc-metrics-agent")
 		assert.NotEqual(t, 0, exitCode, "the binary is still installed")
-		box.mustExec(t, "test", "-f", "/etc/strettchcloud/config/agent.yaml")
-		box.mustExec(t, "test", "-d", "/etc/sc-metrics-agent")
+		assert.Equal(t, agentConfigBefore, box.mustExec(t, "cat", "/etc/sc-metrics-agent/config.yaml"))
+		assert.Equal(t, agentYAMLBefore, box.mustExec(t, "cat", "/etc/strettchcloud/config/agent.yaml"))
 	})
 }
 

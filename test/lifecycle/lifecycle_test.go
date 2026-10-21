@@ -150,10 +150,15 @@ func startContainer(t *testing.T) *container {
 		_ = exec.Command("docker", "rm", "--force", box.name).Run()
 	})
 
-	require.Eventually(t, func() bool {
+	booted := assert.Eventually(t, func() bool {
 		state, _ := box.exec(t, nil, "systemctl", "is-system-running")
 		return state == "running" || state == "degraded"
-	}, 60*time.Second, pollEvery, "systemd did not finish booting")
+	}, 60*time.Second, pollEvery)
+	if !booted {
+		// The container may have exited, which also takes its journal with it.
+		logs, _ := exec.Command("docker", "logs", "--tail", "50", box.name).CombinedOutput()
+		t.Fatalf("systemd did not finish booting; container output:\n%s", logs)
+	}
 	return box
 }
 

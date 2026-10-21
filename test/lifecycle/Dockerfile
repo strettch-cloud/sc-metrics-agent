@@ -3,10 +3,11 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 # The package's dependencies are installed here, so installing the .deb in a
-# test needs no network.
+# test needs no network. apt-utils and gnupg build the signed APT repository
+# the updater tests publish to.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-        systemd systemd-sysv ca-certificates curl jq dmidecode procps \
+        systemd systemd-sysv ca-certificates curl jq dmidecode procps apt-utils gnupg \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

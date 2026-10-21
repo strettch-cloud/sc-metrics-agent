@@ -22,8 +22,6 @@ const (
 	ContentTypeTimeseriesBinary = "application/timeseries-binary-0"
 	// ContentTypeTimeseriesBatchV1 carries many already-compressed batches in a JSON array of base64-encoded blobs.
 	ContentTypeTimeseriesBatchV1 = "application/timeseries-batch-v1"
-	// ContentTypeDiagnosticsBinary is the content type used by SendDiagnostics.
-	ContentTypeDiagnosticsBinary = "application/diagnostics-binary-0"
 	ContentTypeJSON              = "application/json"
 
 	// Headers
@@ -70,17 +68,6 @@ type Response struct {
 	Headers      http.Header
 	RetryAfter   time.Duration
 	Error        error
-}
-
-// DiagnosticPayload represents agent health information
-type DiagnosticPayload struct {
-	AgentID         string                 `json:"agent_id"`
-	Timestamp       int64                  `json:"timestamp"`
-	Status          string                 `json:"status"`
-	LastError       string                 `json:"last_error,omitempty"`
-	MetricsCount    int                    `json:"metrics_count"`
-	CollectorStatus map[string]bool        `json:"collector_status"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // HeartbeatRequest represents the heartbeat payload
@@ -245,36 +232,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, authToken, version string) (
 	return c.sendRequest(ctx, body, ContentTypeJSON, authToken, url)
 }
 
-// SendDiagnostics sends diagnostic information to the ingestor
-func (c *Client) SendDiagnostics(ctx context.Context, diagnostics DiagnosticPayload, authToken string) (*Response, error) {
-	c.logger.Debug("Sending diagnostics", zap.String("agent_id", diagnostics.AgentID))
-
-	// Serialize diagnostics to JSON
-	payload, err := json.Marshal(diagnostics)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal diagnostics: %w", err)
-	}
-
-	// Log the diagnostics payload
-	c.logger.Debug("Sending diagnostics payload",
-		zap.String("agent_id", diagnostics.AgentID),
-		zap.String("status", diagnostics.Status),
-		zap.Int("payload_size_bytes", len(payload)),
-		zap.String("payload", string(payload)),
-	)
-
-	// Compress with Snappy
-	compressed := snappy.Encode(nil, payload)
-
-	// Get the ingestor endpoint
-	endpoint, err := c.getIngestorEndpoint()
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve ingestor endpoint: %w", err)
-	}
-
-	return c.sendWithRetry(ctx, compressed, ContentTypeDiagnosticsBinary, authToken, endpoint)
-}
-
 // sendWithRetry handles the HTTP request with retry logic
 func (c *Client) sendWithRetry(ctx context.Context, data []byte, contentType string, authToken string, endpoint string) (*Response, error) {
 	var lastResponse *Response
@@ -346,7 +303,7 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 	req.Header.Set(HeaderContentType, contentType)
 	// Only set compression header for binary content types (not JSON)
 	switch contentType {
-	case ContentTypeTimeseriesBinary, ContentTypeDiagnosticsBinary:
+	case ContentTypeTimeseriesBinary:
 		req.Header.Set(HeaderContentEncoding, ContentEncodingSnappy)
 	}
 	req.Header.Set(HeaderUserAgent, UserAgentValue)

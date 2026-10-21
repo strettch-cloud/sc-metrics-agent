@@ -125,7 +125,7 @@ func main() {
 		RetryDelay: cfg.RetryInterval,
 	}
 	httpClient := tsclient.NewClient(clientConfig, logger)
-	// Auxiliary writer handles heartbeats and diagnostics (not buffered);
+	// Auxiliary writer handles heartbeats (not buffered);
 	// buffered writer queues metrics so they survive auth or ingest outages.
 	auxWriter := tsclient.NewAuxiliaryWriter(httpClient, logger)
 	metricQueue, err := buffer.NewDiskQueue(cfg.BufferDir, buffer.DefaultMaxBytes, logger)

@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -80,6 +81,16 @@ func newFakeCloud(t *testing.T) *fakeCloud {
 	metadata := helpers.NewMockMetadataServer(ingest.BaseURL(), logger)
 	t.Cleanup(metadata.Close)
 	return &fakeCloud{ingest: ingest, metadata: metadata}
+}
+
+// issuedBearerHeaders lists the Authorization headers the agent may send: one
+// per token the metadata service handed out.
+func (cloud *fakeCloud) issuedBearerHeaders() []string {
+	var headers []string
+	for _, token := range cloud.metadata.IssuedTokens() {
+		headers = append(headers, "Bearer "+token)
+	}
+	return headers
 }
 
 // metricsReceived returns every metric the ingest server accepted.
@@ -198,8 +209,8 @@ func TestAgentSendsMetricsTheResourceManagerAccepts(t *testing.T) {
 	require.Eventually(t, func() bool { return len(cloud.metricsReceived()) > 0 }, waitForAgent, pollEvery)
 
 	request := cloud.ingest.GetRequests()[0]
-	assert.True(t, strings.HasPrefix(request.Authorization, "Bearer mock-test-token-"),
-		"the agent must send the token the metadata service gave it, got %q", request.Authorization)
+	assert.Contains(t, cloud.issuedBearerHeaders(), request.Authorization,
+		"the agent must send the token the metadata service gave it")
 	assert.Empty(t, cloud.ingest.ValidateRequest(request), "every metric must pass the resource manager's checks")
 
 	sentNames := map[string]bool{}
@@ -228,7 +239,7 @@ func TestAgentSendsAHeartbeatWhenItStarts(t *testing.T) {
 	require.Eventually(t, func() bool { return len(cloud.ingest.GetHeartbeats()) > 0 }, waitForAgent, pollEvery)
 
 	heartbeat := cloud.ingest.GetHeartbeats()[0]
-	assert.True(t, strings.HasPrefix(heartbeat.Authorization, "Bearer mock-test-token-"))
+	assert.Contains(t, cloud.issuedBearerHeaders(), heartbeat.Authorization)
 	assert.Contains(t, string(heartbeat.Body), `"agentType":"SC_METRICS_AGENT"`)
 }
 
@@ -303,10 +314,13 @@ func TestAgentRefusesToStartWithoutAVMID(t *testing.T) {
 	assert.Empty(t, cloud.ingest.GetRequests())
 }
 
-// dmidecodeFindsAVMID tries the same dmidecode paths the agent tries.
+// dmidecodeFindsAVMID tries the same dmidecode paths the agent tries, with the
+// same 5 s limit, so a stuck dmidecode can't hang the test.
 func dmidecodeFindsAVMID() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	for _, dmidecode := range []string{"/usr/sbin/dmidecode", "/sbin/dmidecode", "dmidecode"} {
-		output, err := exec.Command(dmidecode, "-s", "system-uuid").Output()
+		output, err := exec.CommandContext(ctx, dmidecode, "-s", "system-uuid").Output()
 		if err != nil {
 			continue
 		}

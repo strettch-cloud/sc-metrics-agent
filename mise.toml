@@ -87,7 +87,7 @@ description = "Tests with the race detector; coverage in coverage.out, total pri
 depends = ["deps"]
 # The run fails when total coverage drops below this. Raise it with every pull
 # request that adds tests, until it reaches the 98 target.
-env = { COVERAGE_MINIMUM = "53.5" }
+env = { COVERAGE_MINIMUM = "54.9" }
 run = '''
 set -e
 # -coverpkg=./... credits a test with every package it runs, not only its own,

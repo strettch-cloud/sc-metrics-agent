@@ -32,3 +32,27 @@ func TestLoadAddsEnvironmentLabelsWhenTheFileHasAnEmptyLabelsKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"environment": "test"}, cfg.Labels)
 }
+
+// The logger only knows lowercase level names, so "DEBUG" used to pass
+// validation and then log at info.
+func TestLoadAcceptsTheLogLevelInAnyCase(t *testing.T) {
+	tests := map[string]struct {
+		settings    string
+		environment string
+		want        string
+	}{
+		"from the environment": {environment: "DEBUG", want: "debug"},
+		"from the file":        {settings: "log_level: Warn\n", want: "warn"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			useAgentConfig(t, test.settings)
+			t.Setenv("SC_LOG_LEVEL", test.environment)
+
+			cfg, err := Load()
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cfg.LogLevel)
+		})
+	}
+}

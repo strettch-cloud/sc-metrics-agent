@@ -254,6 +254,9 @@ func Load() (*Config, error) {
 	// Override with environment variables
 	cfg.loadFromEnv()
 
+	// The logger only knows lowercase level names.
+	cfg.LogLevel = strings.ToLower(cfg.LogLevel)
+
 	// Validate configuration
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)

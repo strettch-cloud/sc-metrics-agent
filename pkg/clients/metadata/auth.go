@@ -18,7 +18,7 @@ type AuthManager struct {
 	stopCh        chan struct{}
 
 	// mutex guards the two fields below: the refresh loop writes them while
-	// the pipeline, the heartbeat and the diagnostics read them.
+	// the pipeline, the heartbeat and the ingest client read them.
 	mutex        sync.RWMutex
 	currentToken string
 	cloudAPIURL  string

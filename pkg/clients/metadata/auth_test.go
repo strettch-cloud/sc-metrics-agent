@@ -42,7 +42,7 @@ func newTestAuthManager(t *testing.T, endpoint string) *AuthManager {
 }
 
 // The refresh loop replaces the token while the pipeline, the heartbeat and the
-// diagnostics read it from other goroutines. The race detector, which
+// ingest client read it from other goroutines. The race detector, which
 // `mise run test` turns on, fails this test if those reads aren't synchronised.
 func TestAuthManagerTokenCanBeReadWhileItIsRefreshed(t *testing.T) {
 	manager := newTestAuthManager(t, newMetadataServer(t).URL)

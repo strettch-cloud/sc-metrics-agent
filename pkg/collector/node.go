@@ -504,13 +504,29 @@ func (c *filesystemCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *filesystemCollector) Collect(ch chan<- prometheus.Metric) {
-	mounts, err := procfs.GetMounts()
+	self, err := c.procFS.Self()
+	if err != nil {
+		c.logger.Debug("Failed to find this process in procfs", zap.Error(err))
+		return
+	}
+	mounts, err := self.MountInfo()
 	if err != nil {
 		c.logger.Debug("Failed to get mount information", zap.Error(err))
 		return
 	}
 
-	for _, mount := range mounts {
+	// A path can be mounted more than once, for example a bind mount on top of
+	// itself or a second disk over the first. statfs only sees the top mount,
+	// which mountinfo lists last, so each path is reported once, for that mount.
+	// Reporting it twice with the same labels would make the whole Gather fail.
+	reportedMountPoints := make(map[string]bool)
+	for i := len(mounts) - 1; i >= 0; i-- {
+		mount := mounts[i]
+		if reportedMountPoints[mount.MountPoint] {
+			continue
+		}
+		reportedMountPoints[mount.MountPoint] = true
+
 		if ignoredFSTypes[mount.FSType] {
 			c.logger.Debug("Skipping ignored filesystem type",
 				zap.String("fstype", mount.FSType),

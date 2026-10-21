@@ -186,7 +186,7 @@ func TestUpdaterKeepsAStoppedAgentStopped(t *testing.T) {
 	require.Equal(t, 0, exitCode, output)
 	assert.Equal(t, box.packageVersion(t, newerPackage), box.installedVersion(t))
 	active, _ := box.unitState(t, agentService)
-	assert.NotEqual(t, "active", active, "the updater started an agent that was stopped")
+	assert.Equal(t, "inactive", active, "the updater started an agent that was stopped")
 }
 
 // Only the key in the APT source's keyring may deliver packages that run as

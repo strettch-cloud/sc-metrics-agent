@@ -14,9 +14,8 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	heartbeatInterval = 10 * time.Minute
-)
+// A variable only so tests can shorten it.
+var heartbeatInterval = 10 * time.Minute
 
 // Processor implements the Collect -> Decorate -> Aggregate -> Write pipeline
 type Processor struct {

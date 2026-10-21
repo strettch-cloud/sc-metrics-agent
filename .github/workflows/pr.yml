@@ -1,8 +1,9 @@
 name: Pull Request Validation
 
+# Every base branch, not only main: a pull request stacked on another one
+# targets that one's branch and still needs its checks.
 on:
   pull_request:
-    branches: [ main ]
     types: [opened, synchronize, reopened]
 
 permissions:

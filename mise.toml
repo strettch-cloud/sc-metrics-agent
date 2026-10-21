@@ -56,14 +56,15 @@ run = "SC_LOG_LEVEL=debug exec $BUILD_DIR/$BINARY_NAME"
 [tasks.fmt]
 run = "golangci-lint fmt"
 
+# The lifecycle tag includes test/lifecycle, which only builds with it.
 [tasks.lint]
 description = "Check only (CI-safe)"
 depends = ["deps"]
-run = "golangci-lint run"
+run = "golangci-lint run --build-tags=lifecycle"
 
 [tasks.lint-fix]
 description = "Lint and auto-fix"
-run = "golangci-lint run --fix"
+run = "golangci-lint run --build-tags=lifecycle --fix"
 
 [tasks.lint-packaging]
 description = "shellcheck every script, and check the systemd units (CI-safe)"

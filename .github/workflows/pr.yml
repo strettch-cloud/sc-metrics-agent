@@ -76,3 +76,60 @@ jobs:
           ls -la build/
           file build/sc-metrics-agent
           ./build/sc-metrics-agent -v
+
+  # Installs, upgrades and removes the real .deb under systemd on each
+  # supported OS (test/lifecycle). It runs only after validation passes, so
+  # nothing is installed before the malware scan, and one job per OS runs in
+  # parallel.
+  lifecycle:
+    name: Package lifecycle (${{ matrix.os }})
+    needs: validation
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13']
+    env:
+      FPM_VERSION: '1.18.0' # same as _build.yml
+      # Google's mirror of the official images avoids Docker Hub's pull limits.
+      LIFECYCLE_IMAGE: mirror.gcr.io/library/${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain (mise.toml)
+        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          version: 2026.10.11
+          sha256: f9612efcddda0ae55b62d3b6f82a6c860d5b54ebee0807d4f1a1d578055e1607
+          # Only Go: the linters and scanners already ran in validation.
+          install_args: go
+
+      - name: Install fpm
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq ruby ruby-dev build-essential
+          sudo gem install --no-document fpm -v "$FPM_VERSION"
+
+      - name: Download the latest release's package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern '*_amd64.deb' --dir "$RUNNER_TEMP/previous"
+          previous_deb=$(ls "$RUNNER_TEMP"/previous/*_amd64.deb)
+          echo "LIFECYCLE_PREVIOUS_DEB=$previous_deb" >> "$GITHUB_ENV"
+          # The package under test must sort after the release for apt to upgrade.
+          echo "VERSION=$(dpkg-deb --field "$previous_deb" Version)+ci.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Build the package under test
+        run: |
+          GOOS=linux GOARCH=amd64 mise run build
+          ./.github/scripts/build-package.sh "$VERSION" stable amd64
+          echo "LIFECYCLE_DEB=$PWD/sc-metrics-agent_${VERSION}_amd64.deb" >> "$GITHUB_ENV"
+
+      - name: Install, upgrade and remove under systemd
+        working-directory: test/lifecycle
+        run: go test -tags lifecycle -count=1 -v -timeout 15m .

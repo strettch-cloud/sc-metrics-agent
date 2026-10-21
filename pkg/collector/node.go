@@ -27,6 +27,13 @@ var ignoredFSTypes = map[string]bool{
 	"nfs": true, "nfs4": true, "cifs": true, "smb": true,
 }
 
+// validLabelValue replaces bytes that aren't valid UTF-8. Linux allows them
+// in paths and interface names, but MustNewConstMetric panics on them inside
+// Gather, which crashes the whole agent on every collection.
+func validLabelValue(name string) string {
+	return strings.ToValidUTF8(name, "\uFFFD")
+}
+
 // getInterfaceIPAddress retrieves the first non-loopback IPv4 address of an interface
 func getInterfaceIPAddress(interfaceName string) (string, error) {
 	iface, err := net.InterfaceByName(interfaceName)
@@ -482,10 +489,11 @@ func (c *networkCollector) Collect(ch chan<- prometheus.Metric) {
 			zap.Uint64("rx_bytes", dev.RxBytes),
 			zap.Uint64("tx_bytes", dev.TxBytes))
 
-		ch <- prometheus.MustNewConstMetric(c.descs["receive_bytes"], prometheus.CounterValue, float64(dev.RxBytes), dev.Name, ipAddress)
-		ch <- prometheus.MustNewConstMetric(c.descs["transmit_bytes"], prometheus.CounterValue, float64(dev.TxBytes), dev.Name, ipAddress)
-		ch <- prometheus.MustNewConstMetric(c.descs["receive_packets"], prometheus.CounterValue, float64(dev.RxPackets), dev.Name, ipAddress)
-		ch <- prometheus.MustNewConstMetric(c.descs["transmit_packets"], prometheus.CounterValue, float64(dev.TxPackets), dev.Name, ipAddress)
+		device := validLabelValue(dev.Name)
+		ch <- prometheus.MustNewConstMetric(c.descs["receive_bytes"], prometheus.CounterValue, float64(dev.RxBytes), device, ipAddress)
+		ch <- prometheus.MustNewConstMetric(c.descs["transmit_bytes"], prometheus.CounterValue, float64(dev.TxBytes), device, ipAddress)
+		ch <- prometheus.MustNewConstMetric(c.descs["receive_packets"], prometheus.CounterValue, float64(dev.RxPackets), device, ipAddress)
+		ch <- prometheus.MustNewConstMetric(c.descs["transmit_packets"], prometheus.CounterValue, float64(dev.TxPackets), device, ipAddress)
 	}
 }
 
@@ -569,8 +577,10 @@ func (c *filesystemCollector) Collect(ch chan<- prometheus.Metric) {
 		freeSize := float64(stat.Bfree * uint64(stat.Bsize))
 		availSize := float64(stat.Bavail * uint64(stat.Bsize))
 
-		ch <- prometheus.MustNewConstMetric(c.descs["size"], prometheus.GaugeValue, totalSize, mount.Source, mount.FSType, mount.MountPoint)
-		ch <- prometheus.MustNewConstMetric(c.descs["free"], prometheus.GaugeValue, freeSize, mount.Source, mount.FSType, mount.MountPoint)
-		ch <- prometheus.MustNewConstMetric(c.descs["avail"], prometheus.GaugeValue, availSize, mount.Source, mount.FSType, mount.MountPoint)
+		// The type too: FUSE filesystems carry a user-chosen subtype, as in fuse.sshfs.
+		device, fsType, mountPoint := validLabelValue(mount.Source), validLabelValue(mount.FSType), validLabelValue(mount.MountPoint)
+		ch <- prometheus.MustNewConstMetric(c.descs["size"], prometheus.GaugeValue, totalSize, device, fsType, mountPoint)
+		ch <- prometheus.MustNewConstMetric(c.descs["free"], prometheus.GaugeValue, freeSize, device, fsType, mountPoint)
+		ch <- prometheus.MustNewConstMetric(c.descs["avail"], prometheus.GaugeValue, availSize, device, fsType, mountPoint)
 	}
 }

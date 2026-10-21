@@ -161,3 +161,17 @@ func TestFilesystemCollectorReportsAPathOnceWithoutAParentLink(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vda"}, devicesReportedFor(families, mountPoint))
 }
+
+// Linux allows any bytes in a path, but a Prometheus label value must be valid
+// UTF-8. A path like "café" written in Latin-1 used to panic inside Gather and
+// crash the whole agent on every collection.
+func TestFilesystemCollectorKeepsAMountPointThatIsNotValidUTF8(t *testing.T) {
+	mountPoint := filepath.Join(t.TempDir(), "caf\xe9")
+	require.NoError(t, os.Mkdir(mountPoint, 0o755))
+	procFS := procWithMountinfo(t, mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"))
+
+	families, err := gatherFilesystem(t, procFS)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/dev/vda"}, devicesReportedFor(families, strings.ToValidUTF8(mountPoint, "�")))
+}

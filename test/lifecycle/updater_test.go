@@ -36,7 +36,8 @@ const (
 )
 
 // setUpRepository creates both signing keys and points the agent's APT source
-// at the repository, the way install.sh points it at the real one.
+// at the repository, the way the installer at
+// repo.cloud.strettch.com/metrics/install.sh points it at the real one.
 func (box *container) setUpRepository(t *testing.T) {
 	t.Helper()
 	for _, gpgHome := range []string{trustedGPGHome, untrustedGPGHome} {

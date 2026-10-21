@@ -208,11 +208,15 @@ func (sc *SystemCollector) Collect(ctx context.Context) ([]*dto.MetricFamily, er
 	sc.logger.Debug("Starting metric collection")
 	start := time.Now()
 
-	// Gather metrics from the registry
+	// Gather returns what it could collect along with the error, so a collector
+	// that fails costs only its own metrics, not the CPU and memory ones too.
 	metricFamilies, err := sc.registry.Gather()
 	if err != nil {
-		sc.logger.Error("Failed to gather metrics from registry", zap.Error(err))
-		return nil, fmt.Errorf("failed to gather metrics: %w", err)
+		if len(metricFamilies) == 0 {
+			sc.logger.Error("Failed to gather metrics from registry", zap.Error(err))
+			return nil, fmt.Errorf("failed to gather metrics: %w", err)
+		}
+		sc.logger.Error("Some metrics could not be gathered, sending the rest", zap.Error(err))
 	}
 
 	sc.lastCollect = time.Now()

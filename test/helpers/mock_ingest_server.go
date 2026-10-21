@@ -1,12 +1,14 @@
 package helpers
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/snappy"
@@ -44,13 +46,26 @@ type ApiResponse struct {
 // MockIngestServer simulates the resource-manager /metrics/ingest endpoint
 // with exact validation logic matching the real implementation
 type MockIngestServer struct {
-	server   *httptest.Server
-	logger   *zap.Logger
-	requests []IngestRequest
+	server *httptest.Server
+	logger *zap.Logger
+
+	// mutex guards the fields below: a running agent sends while a test reads.
+	mutex       sync.Mutex
+	requests    []IngestRequest
+	heartbeats  []HeartbeatRequest
+	unavailable     bool
+	rejectedIngests int
+}
+
+// HeartbeatRequest captures a heartbeat the agent sent.
+type HeartbeatRequest struct {
+	Authorization string
+	Body          []byte
 }
 
 // IngestRequest captures details of received requests for testing
 type IngestRequest struct {
+	Authorization   string
 	ContentType     string
 	ContentEncoding string
 	UserAgent       string
@@ -60,7 +75,9 @@ type IngestRequest struct {
 	Timestamp       time.Time
 }
 
-// ResourceManagerSupportedMetrics is the exact whitelist from resource-manager
+// ResourceManagerSupportedMetrics is the exact whitelist from resource-manager:
+// keep it in sync with resource-manager/internal/dto/metrics_dto.go in
+// strettch-cloud/platform, or tests reject metrics production accepts.
 var ResourceManagerSupportedMetrics = map[string]bool{
 	// CPU Metrics
 	"node_cpu_seconds_total": true,
@@ -92,7 +109,9 @@ var ResourceManagerSupportedMetrics = map[string]bool{
 	"node_network_transmit_packets_total": true,
 
 	// Filesystem Metrics
-	"node_filesystem_size_bytes": true,
+	"node_filesystem_size_bytes":  true,
+	"node_filesystem_free_bytes":  true,
+	"node_filesystem_avail_bytes": true,
 }
 
 // NewMockIngestServer creates a new mock server that behaves exactly like resource-manager
@@ -111,6 +130,32 @@ func (m *MockIngestServer) URL() string {
 	return m.server.URL + "/metrics/ingest"
 }
 
+// BaseURL is the cloud API address the metadata service hands to the agent.
+func (m *MockIngestServer) BaseURL() string {
+	return m.server.URL
+}
+
+// SetUnavailable makes every request fail with 503, as during an outage.
+func (m *MockIngestServer) SetUnavailable(unavailable bool) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.unavailable = unavailable
+}
+
+// RejectedIngestCount is how many metric sends were refused while unavailable.
+func (m *MockIngestServer) RejectedIngestCount() int {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.rejectedIngests
+}
+
+// GetHeartbeats returns the heartbeats received so far.
+func (m *MockIngestServer) GetHeartbeats() []HeartbeatRequest {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return append([]HeartbeatRequest(nil), m.heartbeats...)
+}
+
 // Close shuts down the mock server
 func (m *MockIngestServer) Close() {
 	m.server.Close()
@@ -118,11 +163,15 @@ func (m *MockIngestServer) Close() {
 
 // GetRequests returns all received requests for testing
 func (m *MockIngestServer) GetRequests() []IngestRequest {
-	return m.requests
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return append([]IngestRequest(nil), m.requests...)
 }
 
 // ClearRequests clears the request history
 func (m *MockIngestServer) ClearRequests() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.requests = make([]IngestRequest, 0)
 }
 
@@ -130,6 +179,22 @@ func (m *MockIngestServer) ClearRequests() {
 func (m *MockIngestServer) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	m.mutex.Lock()
+	unavailable := m.unavailable
+	if unavailable && strings.HasSuffix(r.URL.Path, "/metrics/ingest") {
+		m.rejectedIngests++
+	}
+	m.mutex.Unlock()
+	if unavailable {
+		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	if strings.HasSuffix(r.URL.Path, "/compute/agent/heartbeat") {
+		m.handleHeartbeat(w, r)
 		return
 	}
 
@@ -162,6 +227,7 @@ func (m *MockIngestServer) handleIngest(w http.ResponseWriter, r *http.Request) 
 	}()
 
 	request := IngestRequest{
+		Authorization:   r.Header.Get("Authorization"),
 		ContentType:     contentType,
 		ContentEncoding: contentEncoding,
 		UserAgent:       userAgent,
@@ -191,6 +257,18 @@ func (m *MockIngestServer) handleIngest(w http.ResponseWriter, r *http.Request) 
 	case strings.Contains(contentType, "application/timeseries-binary-0"):
 		response := m.handleTimeseriesMetrics(decompressedBody, &request)
 		m.sendResponse(w, response)
+	case strings.Contains(contentType, "application/timeseries-batch-v1"):
+		// The running agent sends this format: its disk buffer drains batches in one envelope.
+		if contentEncoding == "snappy" {
+			http.Error(w, "Envelope must not be snappy-encoded", http.StatusBadRequest)
+			return
+		}
+		metrics, err := decodeBatchEnvelope(decompressedBody)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		m.sendResponse(w, m.processMetrics(metrics, &request))
 	default:
 		m.logger.Error("Unsupported content type", zap.String("content_type", contentType))
 		http.Error(w, fmt.Sprintf("Unsupported content type: %s", contentType), http.StatusBadRequest)
@@ -198,7 +276,21 @@ func (m *MockIngestServer) handleIngest(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Store request for testing
+	m.mutex.Lock()
 	m.requests = append(m.requests, request)
+	m.mutex.Unlock()
+}
+
+func (m *MockIngestServer) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	m.mutex.Lock()
+	m.heartbeats = append(m.heartbeats, HeartbeatRequest{Authorization: r.Header.Get("Authorization"), Body: body})
+	m.mutex.Unlock()
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleTimeseriesMetrics processes timeseries metrics with exact resource-manager validation
@@ -217,6 +309,40 @@ func (m *MockIngestServer) handleTimeseriesMetrics(bodyBytes []byte, request *In
 		}
 	}
 
+	return m.processMetrics(timeseriesMetrics, request)
+}
+
+// decodeBatchEnvelope mirrors resource-manager's DecodeTimeseriesBatchEnvelope:
+// a JSON array of base64 strings, each a snappy-compressed JSON batch of metrics.
+func decodeBatchEnvelope(body []byte) (TimeseriesMetrics, error) {
+	var encodedBatches []string
+	if err := json.Unmarshal(body, &encodedBatches); err != nil {
+		return nil, fmt.Errorf("invalid envelope JSON: %w", err)
+	}
+	if len(encodedBatches) == 0 {
+		return nil, fmt.Errorf("envelope contains no batches")
+	}
+	var metrics TimeseriesMetrics
+	for index, encodedBatch := range encodedBatches {
+		snappyBatch, err := base64.StdEncoding.DecodeString(encodedBatch)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode failed at batch index %d: %w", index, err)
+		}
+		jsonBatch, err := snappy.Decode(nil, snappyBatch)
+		if err != nil {
+			return nil, fmt.Errorf("snappy decode failed at batch index %d: %w", index, err)
+		}
+		var batch TimeseriesMetrics
+		if err := json.Unmarshal(jsonBatch, &batch); err != nil {
+			return nil, fmt.Errorf("json decode failed at batch index %d: %w", index, err)
+		}
+		metrics = append(metrics, batch...)
+	}
+	return metrics, nil
+}
+
+// processMetrics applies resource-manager's per-metric checks.
+func (m *MockIngestServer) processMetrics(timeseriesMetrics TimeseriesMetrics, request *IngestRequest) ApiResponse {
 	request.ParsedMetrics = timeseriesMetrics
 
 	processed := 0
@@ -297,13 +423,19 @@ func (m *MockIngestServer) sendResponse(w http.ResponseWriter, response ApiRespo
 func (m *MockIngestServer) ValidateRequest(request IngestRequest) []string {
 	var issues []string
 
-	// Validate headers
-	if request.ContentType != "application/timeseries-binary-0" {
-		issues = append(issues, fmt.Sprintf("Expected content-type 'application/timeseries-binary-0', got '%s'", request.ContentType))
-	}
-
-	if request.ContentEncoding != "snappy" {
-		issues = append(issues, fmt.Sprintf("Expected content-encoding 'snappy', got '%s'", request.ContentEncoding))
+	// The running agent drains its disk buffer as a plain JSON batch-v1
+	// envelope; a direct send is snappy-encoded binary-0.
+	switch request.ContentType {
+	case "application/timeseries-batch-v1":
+		if request.ContentEncoding != "" {
+			issues = append(issues, fmt.Sprintf("Expected no content-encoding on a batch envelope, got '%s'", request.ContentEncoding))
+		}
+	case "application/timeseries-binary-0":
+		if request.ContentEncoding != "snappy" {
+			issues = append(issues, fmt.Sprintf("Expected content-encoding 'snappy', got '%s'", request.ContentEncoding))
+		}
+	default:
+		issues = append(issues, fmt.Sprintf("Unexpected content-type '%s'", request.ContentType))
 	}
 
 	if !strings.Contains(request.UserAgent, "sc-metrics-agent") {
@@ -380,8 +512,8 @@ func (m *MockMetadataServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		zap.String("path", r.URL.Path),
 	)
 
-	// Handle token endpoint - this is what the metadata client calls
-	if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/auth/token") {
+	// The agent builds this path from metadata_service.base_url.
+	if r.Method == "GET" && r.URL.Path == "/metadata/v1/auth-token" {
 		m.handleTokenRequest(w, r)
 		return
 	}

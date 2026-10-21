@@ -179,7 +179,6 @@ func (p *Processor) getAuthTokenWithRetry(ctx context.Context) (string, error) {
 	const (
 		maxRetries    = 3
 		initialDelay  = 500 * time.Millisecond
-		maxDelay      = 5 * time.Second
 		backoffFactor = 2
 	)
 
@@ -226,9 +225,6 @@ func (p *Processor) getAuthTokenWithRetry(ctx context.Context) (string, error) {
 			}
 
 			delay *= backoffFactor
-			if delay > maxDelay {
-				delay = maxDelay
-			}
 		}
 	}
 

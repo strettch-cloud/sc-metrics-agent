@@ -325,6 +325,10 @@ func (c *Config) loadFromEnv() {
 
 	// Load labels from SC_LABELS (format: key1=value1,key2=value2)
 	if val := os.Getenv("SC_LABELS"); val != "" {
+		// An empty `labels:` in the file leaves the map nil.
+		if c.Labels == nil {
+			c.Labels = make(map[string]string)
+		}
 		labels := parseLabels(val)
 		for k, v := range labels {
 			c.Labels[k] = v

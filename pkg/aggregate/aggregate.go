@@ -84,10 +84,6 @@ func (a *aggregator) processFamily(family *dto.MetricFamily, timestamp int64) ([
 
 // processMetric converts a single Prometheus metric to internal format
 func (a *aggregator) processMetric(familyName, familyType string, metric *dto.Metric, timestamp int64) ([]MetricWithValue, error) {
-	if metric == nil {
-		return nil, fmt.Errorf("metric is nil")
-	}
-
 	// Extract labels
 	labels := make(map[string]string)
 	for _, labelPair := range metric.Label {
@@ -221,28 +217,6 @@ func copyLabels(labels map[string]string) map[string]string {
 	return copy
 }
 
-// BatchMetrics groups metrics into batches for efficient transmission
-func BatchMetrics(metrics []MetricWithValue, batchSize int) [][]MetricWithValue {
-	if len(metrics) == 0 {
-		return nil
-	}
-
-	if batchSize <= 0 {
-		batchSize = 1000 // Default batch size
-	}
-
-	var batches [][]MetricWithValue
-	for i := 0; i < len(metrics); i += batchSize {
-		end := i + batchSize
-		if end > len(metrics) {
-			end = len(metrics)
-		}
-		batches = append(batches, metrics[i:end])
-	}
-
-	return batches
-}
-
 // SortMetrics sorts metrics by name and then by label fingerprint for consistent ordering
 func SortMetrics(metrics []MetricWithValue) {
 	sort.Slice(metrics, func(i, j int) bool {
@@ -274,74 +248,8 @@ func labelFingerprint(labels map[string]string) string {
 	return strings.Join(parts, ",")
 }
 
-// FilterMetricsByName filters metrics by name patterns
-func FilterMetricsByName(metrics []MetricWithValue, patterns []string) []MetricWithValue {
-	if len(patterns) == 0 {
-		return metrics
-	}
-
-	var filtered []MetricWithValue
-	for _, metric := range metrics {
-		for _, pattern := range patterns {
-			if strings.Contains(metric.Name, pattern) {
-				filtered = append(filtered, metric)
-				break
-			}
-		}
-	}
-
-	return filtered
-}
-
-// MetricStats provides statistics about aggregated metrics
-type MetricStats struct {
-	TotalMetrics     int               `json:"total_metrics"`
-	MetricsByType    map[string]int    `json:"metrics_by_type"`
-	UniqueMetricNames int              `json:"unique_metric_names"`
-	TimeRange        TimeRange         `json:"time_range"`
-}
-
 type TimeRange struct {
 	Start int64 `json:"start"`
 	End   int64 `json:"end"`
 }
 
-// GetMetricStats calculates statistics for a slice of metrics
-func GetMetricStats(metrics []MetricWithValue) MetricStats {
-	stats := MetricStats{
-		TotalMetrics:  len(metrics),
-		MetricsByType: make(map[string]int),
-	}
-
-	if len(metrics) == 0 {
-		return stats
-	}
-
-	uniqueNames := make(map[string]bool)
-	minTime := metrics[0].Timestamp
-	maxTime := metrics[0].Timestamp
-
-	for _, metric := range metrics {
-		// Count by type
-		stats.MetricsByType[metric.Type]++
-		
-		// Track unique names
-		uniqueNames[metric.Name] = true
-		
-		// Track time range
-		if metric.Timestamp < minTime {
-			minTime = metric.Timestamp
-		}
-		if metric.Timestamp > maxTime {
-			maxTime = metric.Timestamp
-		}
-	}
-
-	stats.UniqueMetricNames = len(uniqueNames)
-	stats.TimeRange = TimeRange{
-		Start: minTime,
-		End:   maxTime,
-	}
-
-	return stats
-}

@@ -53,6 +53,16 @@ func createTestClient(endpoint string, logger *zap.Logger) *tsclient.Client {
 	return tsclient.NewClient(clientConfig, logger)
 }
 
+// sendLikeTheAgent sends metrics the way the agent does: compressed into a
+// batch, in a batch-v1 envelope, which is how it drains its disk buffer.
+func sendLikeTheAgent(ctx context.Context, client *tsclient.Client, metrics []aggregate.MetricWithValue) (*tsclient.Response, error) {
+	compressed, err := client.CompressMetrics(metrics)
+	if err != nil {
+		return nil, err
+	}
+	return client.SendCompressedBatches(ctx, [][]byte{compressed}, "")
+}
+
 // TestResourceManagerCompatibility_EndToEnd tests complete end-to-end
 // compatibility with the resource-manager ingest endpoint
 func TestResourceManagerCompatibility_EndToEnd(t *testing.T) {
@@ -109,7 +119,7 @@ func TestResourceManagerCompatibility_EndToEnd(t *testing.T) {
 
 	// Send metrics
 	ctx := context.Background()
-	response, err := client.SendMetrics(ctx, testMetrics, "")
+	response, err := sendLikeTheAgent(ctx, client, testMetrics)
 	require.NoError(t, err)
 	require.NotNil(t, response)
 
@@ -192,7 +202,7 @@ func TestResourceManagerCompatibility_UnsupportedMetrics(t *testing.T) {
 
 	// Send metrics
 	ctx := context.Background()
-	response, err := client.SendMetrics(ctx, testMetrics, "")
+	response, err := sendLikeTheAgent(ctx, client, testMetrics)
 	require.NoError(t, err)
 	require.NotNil(t, response)
 
@@ -304,7 +314,7 @@ func TestResourceManagerCompatibility_ValidationErrors(t *testing.T) {
 
 			// Send metrics
 			ctx := context.Background()
-			response, err := client.SendMetrics(ctx, tc.metrics, "")
+			response, err := sendLikeTheAgent(ctx, client, tc.metrics)
 			require.NoError(t, err)
 			require.NotNil(t, response)
 
@@ -371,7 +381,7 @@ func TestResourceManagerCompatibility_CompressionAndHeaders(t *testing.T) {
 
 	// Send metrics
 	ctx := context.Background()
-	response, err := client.SendMetrics(ctx, testMetrics, "")
+	response, err := sendLikeTheAgent(ctx, client, testMetrics)
 	require.NoError(t, err)
 	require.NotNil(t, response)
 
@@ -381,16 +391,12 @@ func TestResourceManagerCompatibility_CompressionAndHeaders(t *testing.T) {
 
 	request := requests[0]
 
-	// Test compression
-	assert.Equal(t, "snappy", request.ContentEncoding, "Should use snappy compression")
-	assert.Greater(t, len(request.Body), 0, "Compressed body should not be empty")
-	assert.Greater(t, len(request.DecompressedBody), 0, "Decompressed body should not be empty")
-	// Note: For small payloads, compression might not reduce size due to overhead
-	// The important thing is that compression/decompression works correctly
+	// The envelope is plain JSON; each batch inside it is snappy-compressed.
+	assert.Empty(t, request.ContentEncoding, "The envelope itself should not be compressed")
+	assert.Greater(t, len(request.Body), 0, "The envelope should not be empty")
 
-	// Test headers
-	assert.Equal(t, "application/timeseries-binary-0", request.ContentType, 
-		"Should use correct content type")
+	assert.Equal(t, "application/timeseries-batch-v1", request.ContentType,
+		"Should use the batch envelope content type")
 	assert.Contains(t, request.UserAgent, "sc-metrics-agent", 
 		"Should have correct user agent")
 
@@ -454,7 +460,7 @@ func TestResourceManagerCompatibility_BatchProcessing(t *testing.T) {
 
 	// Send batch
 	ctx := context.Background()
-	response, err := client.SendMetrics(ctx, testMetrics, "")
+	response, err := sendLikeTheAgent(ctx, client, testMetrics)
 	require.NoError(t, err)
 	require.NotNil(t, response)
 

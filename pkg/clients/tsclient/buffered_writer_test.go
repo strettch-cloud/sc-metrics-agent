@@ -18,6 +18,8 @@ type fakeSender struct {
 	endpointAvailable bool
 	results           []sendResult
 	envelopes         [][][]byte
+	// compressErr, when set, fails every compression.
+	compressErr error
 }
 
 type sendResult struct {
@@ -30,6 +32,9 @@ func (f *fakeSender) CompressMetrics(metrics []aggregate.MetricWithValue) ([]byt
 	// without depending on snappy/JSON output.
 	if len(metrics) == 0 {
 		return nil, errors.New("no metrics")
+	}
+	if f.compressErr != nil {
+		return nil, f.compressErr
 	}
 	return []byte(metrics[0].Name), nil
 }

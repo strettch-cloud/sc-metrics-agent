@@ -2,7 +2,6 @@ package aggregate
 
 import (
 	"testing"
-	"time"
 
 	dto "github.com/prometheus/client_model/go"
 	"go.uber.org/zap"
@@ -361,36 +360,6 @@ func TestAggregator_Aggregate_UnsupportedType(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported metric type")
 }
 
-func TestBatchMetrics(t *testing.T) {
-	metrics := []MetricWithValue{
-		{Name: "metric1", Value: 1.0},
-		{Name: "metric2", Value: 2.0},
-		{Name: "metric3", Value: 3.0},
-		{Name: "metric4", Value: 4.0},
-		{Name: "metric5", Value: 5.0},
-	}
-	
-	// Test with batch size 2
-	batches := BatchMetrics(metrics, 2)
-	assert.Len(t, batches, 3)
-	assert.Len(t, batches[0], 2)
-	assert.Len(t, batches[1], 2)
-	assert.Len(t, batches[2], 1)
-	
-	// Test with batch size larger than metrics
-	batches = BatchMetrics(metrics, 10)
-	assert.Len(t, batches, 1)
-	assert.Len(t, batches[0], 5)
-	
-	// Test with empty metrics
-	batches = BatchMetrics([]MetricWithValue{}, 5)
-	assert.Nil(t, batches)
-	
-	// Test with zero batch size (should use default)
-	batches = BatchMetrics(metrics, 0)
-	assert.Len(t, batches, 1) // All metrics fit in default batch size
-}
-
 func TestSortMetrics(t *testing.T) {
 	metrics := []MetricWithValue{
 		{Name: "metric_z", Labels: map[string]string{"instance": "2"}},
@@ -430,53 +399,6 @@ func TestLabelFingerprint(t *testing.T) {
 	// Empty labels
 	emptyFp := labelFingerprint(map[string]string{})
 	assert.Equal(t, "", emptyFp)
-}
-
-func TestFilterMetricsByName(t *testing.T) {
-	metrics := []MetricWithValue{
-		{Name: "cpu_usage_percent"},
-		{Name: "memory_usage_bytes"},
-		{Name: "disk_usage_percent"},
-		{Name: "network_bytes_total"},
-	}
-	
-	// Filter by patterns
-	filtered := FilterMetricsByName(metrics, []string{"usage"})
-	assert.Len(t, filtered, 3) // cpu_usage, memory_usage, disk_usage
-	
-	filtered = FilterMetricsByName(metrics, []string{"bytes"})
-	assert.Len(t, filtered, 2) // memory_usage_bytes, network_bytes_total
-	
-	filtered = FilterMetricsByName(metrics, []string{"nonexistent"})
-	assert.Len(t, filtered, 0)
-	
-	// No patterns should return all metrics
-	filtered = FilterMetricsByName(metrics, []string{})
-	assert.Len(t, filtered, 4)
-}
-
-func TestGetMetricStats(t *testing.T) {
-	now := time.Now().UnixMilli()
-	metrics := []MetricWithValue{
-		{Name: "metric1", Type: "counter", Timestamp: now - 1000},
-		{Name: "metric2", Type: "counter", Timestamp: now},
-		{Name: "metric3", Type: "gauge", Timestamp: now - 500},
-		{Name: "metric1", Type: "counter", Timestamp: now - 2000}, // Duplicate name
-	}
-	
-	stats := GetMetricStats(metrics)
-	
-	assert.Equal(t, 4, stats.TotalMetrics)
-	assert.Equal(t, 3, stats.MetricsByType["counter"])
-	assert.Equal(t, 1, stats.MetricsByType["gauge"])
-	assert.Equal(t, 3, stats.UniqueMetricNames) // metric1, metric2, metric3
-	assert.Equal(t, now-2000, stats.TimeRange.Start)
-	assert.Equal(t, now, stats.TimeRange.End)
-	
-	// Test empty metrics
-	emptyStats := GetMetricStats([]MetricWithValue{})
-	assert.Equal(t, 0, emptyStats.TotalMetrics)
-	assert.Equal(t, 0, emptyStats.UniqueMetricNames)
 }
 
 func TestCopyLabels(t *testing.T) {

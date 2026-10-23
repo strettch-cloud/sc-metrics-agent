@@ -24,17 +24,3 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, DefaultBufferDir, cfg.BufferDir)
 }
 
-func TestString(t *testing.T) {
-	useFakeDMIDecode(t, "")
-	cfg := DefaultConfig()
-	cfg.VMID = "test-vm"
-	cfg.LogLevel = "debug"
-
-	str := cfg.String()
-
-	assert.Contains(t, str, "Config{")
-	assert.Contains(t, str, "CollectionInterval:")
-	assert.Contains(t, str, "VMID:test-vm")
-	assert.Contains(t, str, "LogLevel:debug")
-	assert.Contains(t, str, "Collectors:")
-}

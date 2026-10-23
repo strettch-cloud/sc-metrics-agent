@@ -88,16 +88,26 @@ description = "Tests with the race detector; coverage in coverage.out, total pri
 depends = ["deps"]
 # The run fails when total coverage drops below this. Raise it with every pull
 # request that adds tests, until it reaches the 98 target.
-env = { COVERAGE_MINIMUM = "73.1" }
+env = { COVERAGE_MINIMUM = "82.6" }
 run = '''
 set -e
+patterns=$(mktemp)
+agent_coverage=$(mktemp)
+# The tests in test/ run the agent as its own process, and Go counts only code
+# run inside the test process. So those agents are built with coverage, write
+# it to AGENT_COVERAGE_DIR, and it is added to coverage-raw.out below.
+AGENT_COVERAGE_DIR=$(mktemp -d)
+export AGENT_COVERAGE_DIR
+trap 'rm -rf "$patterns" "$agent_coverage" "$AGENT_COVERAGE_DIR"' EXIT
 # -coverpkg=./... credits a test with every package it runs, not only its own,
 # so integration tests count toward the code they exercise.
 go test -race -coverpkg=./... -coverprofile=coverage-raw.out ./...
+go tool covdata textfmt -i="$AGENT_COVERAGE_DIR" -o="$agent_coverage"
+# Same files and blocks as the tests' own lines; go tool cover adds up a block
+# listed more than once.
+tail -n +2 "$agent_coverage" >> coverage-raw.out
 # coverage.out is coverage-raw.out minus the files .coverageignore lists.
 # Blank and comment lines are skipped: a blank pattern would match every line.
-patterns=$(mktemp)
-trap 'rm -f "$patterns"' EXIT
 grep -vE '^[[:space:]]*(#|$)' .coverageignore > "$patterns" || [ $? -eq 1 ]
 head -n 1 coverage-raw.out > coverage.out
 # grep exits 1 when no line is left, which is fine, and 2 on an invalid pattern.

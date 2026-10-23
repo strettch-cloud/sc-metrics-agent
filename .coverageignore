@@ -12,3 +12,7 @@
 # Mock ingest and metadata servers for the integration tests in test/. They
 # are test code, not part of the agent.
 /test/helpers/
+
+# The SC_TEST_* settings the tests in test/ give the agents they start. Only
+# test builds (the e2e tag) compile it; release builds don't have it.
+pkg/config/overrides_e2e\.go:

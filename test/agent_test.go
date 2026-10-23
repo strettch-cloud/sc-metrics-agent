@@ -60,13 +60,38 @@ func agentBinary(t *testing.T) string {
 	agentBinaryOnce.Do(func() {
 		agentBinaryPath = filepath.Join(buildDirectory, "sc-metrics-agent")
 		// The e2e tag adds the SC_TEST_* overrides, which release builds lack.
-		build := exec.Command("go", "build", "-tags", "e2e", "-ldflags", "-X main.version="+testVersion, "-o", agentBinaryPath, "../cmd/agent")
+		arguments := []string{"build", "-tags", "e2e", "-ldflags", "-X main.version=" + testVersion, "-o", agentBinaryPath}
+		if agentCoverageDirectory() != "" {
+			arguments = append(arguments, "-cover", "-coverpkg=github.com/strettch-cloud/sc-metrics-agent/...")
+		}
+		build := exec.Command("go", append(arguments, "../cmd/agent")...)
 		if output, err := build.CombinedOutput(); err != nil {
 			agentBinaryError = fmt.Errorf("go build failed: %w\n%s", err, output)
 		}
 	})
 	require.NoError(t, agentBinaryError)
 	return agentBinaryPath
+}
+
+// agentCoverageDirectory is where the agents these tests start write their
+// coverage. `mise run test` sets AGENT_COVERAGE_DIR and adds that coverage to
+// the total, because Go counts only code run inside the test process itself.
+// Empty builds the agent without coverage.
+//
+// It is read here, during a test, never when the package loads: only then does
+// go test see the variable, and rerun these tests for a new directory instead
+// of reusing a cached result that wrote no coverage.
+func agentCoverageDirectory() string {
+	return os.Getenv("AGENT_COVERAGE_DIR")
+}
+
+// withAgentCoverage tells an agent started with this environment where to
+// write its coverage.
+func withAgentCoverage(environment []string) []string {
+	if agentCoverageDirectory() == "" {
+		return environment
+	}
+	return append(environment, "GOCOVERDIR="+agentCoverageDirectory())
 }
 
 type fakeCloud struct {
@@ -150,7 +175,7 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 	logFile, err := os.Create(logPath)
 	require.NoError(t, err)
 	command := exec.Command(agentBinary(t))
-	command.Env = environment
+	command.Env = withAgentCoverage(environment)
 	command.Stdout = logFile
 	command.Stderr = logFile
 	require.NoError(t, command.Start())
@@ -165,8 +190,14 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 		select {
 		case <-agent.exited:
 		default:
-			_ = command.Process.Kill()
-			<-agent.exited
+			// SIGTERM first: an agent killed outright writes no coverage.
+			_ = command.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-agent.exited:
+			case <-time.After(waitForAgent):
+				_ = command.Process.Kill()
+				<-agent.exited
+			}
 		}
 		if t.Failed() {
 			t.Logf("agent log:\n%s", agent.log(t))
@@ -337,7 +368,10 @@ func dmidecodeFindsAVMID() bool {
 
 func TestAgentPrintsTheVersionItWasBuiltWith(t *testing.T) {
 	t.Parallel()
-	output, err := exec.Command(agentBinary(t), "-v").CombinedOutput()
+	command := exec.Command(agentBinary(t), "-v")
+	command.Env = withAgentCoverage(os.Environ())
+
+	output, err := command.CombinedOutput()
 
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "Version: "+testVersion)

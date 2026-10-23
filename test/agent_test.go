@@ -1,19 +1,17 @@
 package test
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -139,6 +137,12 @@ type agentProcess struct {
 type agentOptions struct {
 	vmID      string
 	bufferDir string
+	// withoutAgentYAML leaves out agent.yaml, as when the installer couldn't
+	// write it.
+	withoutAgentYAML bool
+	// environment is added to the agent's settings, after them.
+	environment []string
+	arguments   []string
 }
 
 // startAgent runs the agent with only the settings a test gives it, so the
@@ -150,8 +154,10 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 		options.bufferDir = filepath.Join(workDirectory, "buffer")
 	}
 	agentYAMLPath := filepath.Join(workDirectory, "agent.yaml")
-	agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", cloud.metadata.URL())
-	require.NoError(t, os.WriteFile(agentYAMLPath, []byte(agentYAML), 0o600))
+	if !options.withoutAgentYAML {
+		agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", cloud.metadata.URL())
+		require.NoError(t, os.WriteFile(agentYAMLPath, []byte(agentYAML), 0o600))
+	}
 	// dmidecode stands in for the VM's firmware: it prints the VM ID, or
 	// nothing when the test has none.
 	dmidecodePath := filepath.Join(workDirectory, "dmidecode")
@@ -170,14 +176,17 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 		"SC_TEST_MAX_RETRIES=1",
 		"SC_TEST_RETRY_INTERVAL=100ms",
 	}
+	environment = append(environment, options.environment...)
 
 	logPath := filepath.Join(workDirectory, "agent.log")
 	logFile, err := os.Create(logPath)
 	require.NoError(t, err)
-	command := exec.Command(agentBinary(t))
+	command := exec.Command(agentBinary(t), options.arguments...)
 	command.Env = withAgentCoverage(environment)
-	command.Stdout = logFile
-	command.Stderr = logFile
+	// Through a pipe, not the file itself: under systemd the agent writes to a
+	// socket, and a file hides errors that only a pipe or a socket causes.
+	command.Stdout = io.MultiWriter(logFile)
+	command.Stderr = io.MultiWriter(logFile)
 	require.NoError(t, command.Start())
 
 	agent := &agentProcess{command: command, logPath: logPath, exited: make(chan struct{})}
@@ -333,13 +342,35 @@ func TestAgentStopsCleanlyOnSIGTERM(t *testing.T) {
 
 	assert.Equal(t, 0, agent.stop(t))
 	assert.Contains(t, agent.log(t), "Agent shutdown complete")
+	assert.NotContains(t, agent.log(t), "Failed to sync logger")
+}
+
+// Between attempts to send a batch the agent waits 5 seconds, or as long as
+// the ingest's Retry-After asks. SIGTERM must not wait for that, or systemd
+// kills the agent after 90 seconds. The batch stays buffered for the next run.
+func TestAgentStopsPromptlyWhileWaitingToRetryASend(t *testing.T) {
+	t.Parallel()
+	cloud := newFakeCloud(t)
+	bufferDir := filepath.Join(t.TempDir(), "buffer")
+	cloud.ingest.SetUnavailable(true)
+	waitingAnHour := startAgent(t, cloud, agentOptions{
+		vmID: testVMID, bufferDir: bufferDir, environment: []string{"SC_TEST_RETRY_INTERVAL=1h"},
+	})
+	require.Eventually(t, func() bool { return cloud.ingest.RejectedIngestCount() >= 1 }, waitForAgent, pollEvery)
+	stopRequested := time.Now()
+
+	require.Equal(t, 0, waitingAnHour.stop(t))
+	assert.Contains(t, waitingAnHour.log(t), "Agent shutdown complete")
+
+	cloud.ingest.SetUnavailable(false)
+	startAgent(t, cloud, agentOptions{vmID: testVMID, bufferDir: bufferDir})
+	require.Eventually(t, func() bool {
+		return metricsCollectedBefore(cloud.metricsReceived(), stopRequested) > 0
+	}, waitForAgent, pollEvery, "the batch the agent was sending when it stopped was never delivered")
 }
 
 func TestAgentRefusesToStartWithoutAVMID(t *testing.T) {
 	t.Parallel()
-	if dmidecodeFindsAVMID() {
-		t.Skip("dmidecode reports this machine's UUID, so a missing VM ID can't be set up here")
-	}
 	cloud := newFakeCloud(t)
 	agent := startAgent(t, cloud, agentOptions{})
 
@@ -347,23 +378,6 @@ func TestAgentRefusesToStartWithoutAVMID(t *testing.T) {
 	assert.NotEqual(t, 0, agent.waitForExit(t, 10*time.Second))
 	assert.Contains(t, agent.log(t), "vm_id cannot be determined")
 	assert.Empty(t, cloud.ingest.GetRequests())
-}
-
-// dmidecodeFindsAVMID tries the same dmidecode paths the agent tries, with the
-// same 5 s limit, so a stuck dmidecode can't hang the test.
-func dmidecodeFindsAVMID() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for _, dmidecode := range []string{"/usr/sbin/dmidecode", "/sbin/dmidecode", "dmidecode"} {
-		output, err := exec.CommandContext(ctx, dmidecode, "-s", "system-uuid").Output()
-		if err != nil {
-			continue
-		}
-		if _, err := uuid.Parse(strings.TrimSpace(string(output))); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func TestAgentPrintsTheVersionItWasBuiltWith(t *testing.T) {
@@ -375,4 +389,58 @@ func TestAgentPrintsTheVersionItWasBuiltWith(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "Version: "+testVersion)
+}
+
+func TestValidateConfigChecksTheGivenConfigYAML(t *testing.T) {
+	t.Parallel()
+	for name, testCase := range map[string]struct {
+		configYAML string
+		exitCode   int
+		output     string
+	}{
+		"only the log level": {"log_level: debug\n", 0, "Configuration is valid"},
+		"another setting":    {"collection_interval: 1ms\n", 1, "may only set log_level"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			configYAML := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(configYAML, []byte(testCase.configYAML), 0o600))
+			agent := startAgent(t, newFakeCloud(t), agentOptions{vmID: testVMID, arguments: []string{"--validate-config", configYAML}})
+
+			assert.Equal(t, testCase.exitCode, agent.waitForExit(t, waitForAgent))
+			assert.Contains(t, agent.log(t), testCase.output)
+		})
+	}
+}
+
+// Without agent.yaml, which the installer writes, the agent can't find the
+// metadata service, so it exits and says which file is missing.
+func TestAgentExitsWithoutAgentYAML(t *testing.T) {
+	t.Parallel()
+	cloud := newFakeCloud(t)
+	agent := startAgent(t, cloud, agentOptions{vmID: testVMID, withoutAgentYAML: true})
+
+	assert.Equal(t, 1, agent.waitForExit(t, waitForAgent))
+	assert.Contains(t, agent.log(t), "Failed to load configuration")
+	assert.Contains(t, agent.log(t), "agent.yaml")
+	assert.Empty(t, cloud.metadata.IssuedTokens())
+}
+
+func TestAgentExitsWhenItCantCreateItsBuffer(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	agent := startAgent(t, newFakeCloud(t), agentOptions{vmID: testVMID, bufferDir: filepath.Join(file, "buffer")})
+
+	assert.Equal(t, 1, agent.waitForExit(t, waitForAgent))
+	assert.Contains(t, agent.log(t), "Failed to open disk buffer")
+}
+
+func TestSCLogLevelDebugWritesDebugLines(t *testing.T) {
+	t.Parallel()
+	cloud := newFakeCloud(t)
+	agent := startAgent(t, cloud, agentOptions{vmID: testVMID, environment: []string{"SC_LOG_LEVEL=debug"}})
+
+	require.Eventually(t, func() bool { return len(cloud.metricsReceived()) > 0 }, waitForAgent, pollEvery)
+	assert.Contains(t, agent.log(t), `"level":"debug"`)
 }

@@ -118,11 +118,7 @@ func (c *Client) fetchAuthToken(ctx context.Context, vmID string) (*TokenRespons
 		c.logger.Error("Failed to fetch auth token", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch auth token: %w", err)
 	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			c.logger.Warn("Failed to close response body", zap.Error(closeErr))
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -148,44 +144,6 @@ func (c *Client) fetchAuthToken(ctx context.Context, vmID string) (*TokenRespons
 
 	c.logger.Debug("Successfully fetched auth token and metadata")
 	return &tokenResp, nil
-}
-
-// GetAuthTokenWithRetry fetches an auth token with retry logic similar to tsclient
-func (c *Client) GetAuthTokenWithRetry(ctx context.Context, vmID string, maxRetries int, retryDelay time.Duration) (string, error) {
-	var lastErr error
-	
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		default:
-		}
-		
-		if attempt > 0 {
-			c.logger.Info("Retrying auth token request",
-				zap.Int("attempt", attempt),
-				zap.Int("max_retries", maxRetries),
-				zap.Duration("wait_time", retryDelay))
-			
-			select {
-			case <-time.After(retryDelay):
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
-		}
-		
-		token, err := c.GetAuthToken(ctx, vmID)
-		if err == nil {
-			return token, nil
-		}
-		
-		lastErr = err
-		c.logger.Warn("Auth token request failed", 
-			zap.Error(err), 
-			zap.Int("attempt", attempt))
-	}
-	
-	return "", fmt.Errorf("failed to fetch auth token after %d attempts: %w", maxRetries+1, lastErr)
 }
 
 // InvalidateCache forces the next GetAuthToken call to fetch a new token
@@ -227,8 +185,3 @@ func (c *Client) GetCloudAPIURL(ctx context.Context, vmID string) (string, error
 	return url, nil
 }
 
-// Close closes the HTTP client
-func (c *Client) Close() error {
-	c.httpClient.CloseIdleConnections()
-	return nil
-}

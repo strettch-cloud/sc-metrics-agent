@@ -216,3 +216,80 @@ func TestLoadFailsWithoutAVMID(t *testing.T) {
 
 	assert.ErrorContains(t, err, "vm_id cannot be determined")
 }
+
+func TestLoadFailsOnAnAgentYAMLWithoutAUsableAddress(t *testing.T) {
+	for name, testCase := range map[string]struct{ agentYAML, want string }{
+		"not YAML":    {"metadata_service: [\n", "failed to parse agent config"},
+		"no base_url": {"metadata_service:\n  other: value\n", "metadata_service.base_url not found"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			useConfigFiles(t, testCase.agentYAML, "")
+
+			_, err := Load()
+
+			assert.ErrorContains(t, err, testCase.want)
+			assert.ErrorContains(t, err, agentConfigPath)
+		})
+	}
+}
+
+// A dmidecode that fails outright, rather than printing no ID, counts as
+// finding none: SC_VM_ID is used.
+func TestSCVMIDIsUsedWhenDMIDecodeFails(t *testing.T) {
+	useConfigFiles(t, agentYAMLWithAddress, "")
+	script := filepath.Join(t.TempDir(), "dmidecode")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	pointAtList(t, &dmidecodePaths, []string{script})
+	t.Setenv("SC_VM_ID", "vm-from-environment")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-from-environment", cfg.VMID)
+}
+
+func TestAConfigYAMLTheAgentCantReadIsIgnored(t *testing.T) {
+	useConfigFiles(t, agentYAMLWithAddress, "")
+	require.NoError(t, os.Mkdir(settingsPath, 0o700))
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "info", cfg.LogLevel)
+	assert.ErrorContains(t, Validate(settingsPath), settingsPath)
+}
+
+// The heartbeat reports the version of the installed package.
+func TestTheAgentVersionComesFromTheInstalledPackage(t *testing.T) {
+	for name, testCase := range map[string]struct{ dpkgQueryOutput, want string }{
+		"installed":       {"0.2.16", "0.2.16"},
+		"nothing printed": {"", "unknown"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			script := "#!/bin/sh\nprintf '%s' '" + testCase.dpkgQueryOutput + "'\n"
+			require.NoError(t, os.WriteFile(filepath.Join(directory, "dpkg-query"), []byte(script), 0o755))
+			t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			assert.Equal(t, testCase.want, detectAgentVersion())
+		})
+	}
+}
+
+// A dmidecode that hangs, as on broken firmware, must not hang the agent's
+// start: after five seconds it falls back to SC_VM_ID.
+func TestAHangingDMIDecodeFallsBackToSCVMID(t *testing.T) {
+	useConfigFiles(t, agentYAMLWithAddress, "")
+	script := filepath.Join(t.TempDir(), "dmidecode")
+	// exec, so the timeout kills sleep itself and not only a shell around it.
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 60\n"), 0o755))
+	pointAtList(t, &dmidecodePaths, []string{script})
+	t.Setenv("SC_VM_ID", "vm-from-environment")
+	started := time.Now()
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-from-environment", cfg.VMID)
+	assert.Less(t, time.Since(started), 10*time.Second)
+}

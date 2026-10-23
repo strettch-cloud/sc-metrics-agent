@@ -1,6 +1,6 @@
 #!/bin/bash
 # coverage-report.sh - Print the coverage total and a per-package table as
-# Markdown, for the pull request workflow's run summary.
+# Markdown, for the pull request workflow's run summary and coverage comment.
 # Usage: coverage-report.sh [profile]    (default: coverage.out)
 #
 # Run it from the module root, on the profile `mise run test` writes.

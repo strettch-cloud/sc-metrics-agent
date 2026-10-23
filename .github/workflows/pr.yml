@@ -19,6 +19,9 @@ jobs:
   validation:
     name: Test, Lint & Build
     runs-on: ubuntu-24.04
+    outputs:
+      # For the coverage-comment job. Set even when a later step fails.
+      coverage-report: ${{ steps.coverage-report.outputs.markdown }}
 
     steps:
       - name: Checkout code
@@ -54,10 +57,14 @@ jobs:
         run: mise run test
 
       # Also runs when the tests fail on the coverage minimum, so the summary
-      # shows which package lost coverage.
+      # and the comment show which package lost coverage.
       - name: Coverage report (run summary)
+        id: coverage-report
         if: ${{ !cancelled() && hashFiles('coverage.out') != '' }}
-        run: .github/scripts/coverage-report.sh coverage.out >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          report=$(.github/scripts/coverage-report.sh coverage.out)
+          printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+          printf 'markdown<<END_OF_COVERAGE_REPORT\n%s\nEND_OF_COVERAGE_REPORT\n' "$report" >> "$GITHUB_OUTPUT"
 
       - name: Lint
         run: mise run lint
@@ -76,6 +83,39 @@ jobs:
           ls -la build/
           file build/sc-metrics-agent
           ./build/sc-metrics-agent -v
+
+  # Posts the coverage report on the pull request as one comment that each run
+  # updates. It is the only job with a write token, so it runs nothing from the
+  # repository or its dependencies: no checkout, only gh.
+  coverage-comment:
+    name: Coverage comment
+    needs: validation
+    # Pull requests from forks get a read-only token, so they keep only the run
+    # summary. !cancelled() still posts the report when the tests fail.
+    if: ${{ !cancelled() && needs.validation.outputs.coverage-report != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPORT: ${{ needs.validation.outputs.coverage-report }}
+          # How the next run finds this comment to update it.
+          MARKER: '<!-- coverage-report -->'
+        run: |
+          body="$RUNNER_TEMP/coverage-comment.md"
+          printf '%s\n%s\n\nFor commit %s.\n' "$MARKER" "$REPORT" "$HEAD_SHA" > "$body"
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PULL_REQUEST/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith(env.MARKER))) | .id' | head -n 1)
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH --silent "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --field body=@"$body"
+          else
+            gh api --method POST --silent "repos/$GITHUB_REPOSITORY/issues/$PULL_REQUEST/comments" --field body=@"$body"
+          fi
 
   # Installs, upgrades and removes the real .deb under systemd on each
   # supported OS (test/lifecycle). It runs only after validation passes, so

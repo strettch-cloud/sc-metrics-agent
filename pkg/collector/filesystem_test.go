@@ -15,20 +15,23 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-// procWithMountinfo returns a procfs rooted in a temporary directory, whose
-// self/mountinfo holds the given lines, so a test controls what is mounted
+// useMountinfo makes the collectors see the given mountinfo lines, parsed the
+// way procfs parses /proc/self/mountinfo, so a test controls what is mounted
 // without needing root.
-func procWithMountinfo(t *testing.T, mountinfoLines ...string) procfs.FS {
+func useMountinfo(t *testing.T, mountinfoLines ...string) {
 	t.Helper()
 	procRoot := t.TempDir()
 	processDirectory := filepath.Join(procRoot, "1")
 	require.NoError(t, os.Mkdir(processDirectory, 0o755))
 	mountinfo := strings.Join(mountinfoLines, "\n") + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(processDirectory, "mountinfo"), []byte(mountinfo), 0o644))
-	require.NoError(t, os.Symlink("1", filepath.Join(procRoot, "self")))
 	procFS, err := procfs.NewFS(procRoot)
 	require.NoError(t, err)
-	return procFS
+	process, err := procFS.Proc(1)
+	require.NoError(t, err)
+	mounts, err := process.MountInfo()
+	require.NoError(t, err)
+	useMounts(t, mounts, nil)
 }
 
 // The mount point must be a real directory, because the collector measures it
@@ -37,10 +40,10 @@ func mountinfoLine(mountID, parentID int, mountPoint, fsType, device string) str
 	return fmt.Sprintf("%d %d 253:0 / %s rw,relatime shared:1 - %s %s rw", mountID, parentID, mountPoint, fsType, device)
 }
 
-func gatherFilesystem(t *testing.T, procFS procfs.FS) ([]*dto.MetricFamily, error) {
+func gatherFilesystem(t *testing.T) ([]*dto.MetricFamily, error) {
 	t.Helper()
 	registry := prometheus.NewPedanticRegistry()
-	registry.MustRegister(&filesystemCollector{procFS: procFS, logger: zaptest.NewLogger(t)})
+	registry.MustRegister(&filesystemCollector{logger: zaptest.NewLogger(t)})
 	return registry.Gather()
 }
 
@@ -63,26 +66,16 @@ func devicesReportedFor(families []*dto.MetricFamily, mountPoint string) []strin
 	return devices
 }
 
-func TestFilesystemCollectorReadsMountsFromItsProcfs(t *testing.T) {
-	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t, mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vdz"))
-
-	families, err := gatherFilesystem(t, procFS)
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"/dev/vdz"}, devicesReportedFor(families, mountPoint))
-}
-
 // A bind mount of a path on top of itself lists the same device, type and
 // path twice. Two series with the same labels make Gather fail.
 func TestFilesystemCollectorReportsAPathMountedTwiceOnce(t *testing.T) {
 	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t,
+	useMountinfo(t,
 		mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"),
 		mountinfoLine(41, 40, mountPoint, "ext4", "/dev/vda"),
 	)
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vda"}, devicesReportedFor(families, mountPoint))
@@ -92,12 +85,12 @@ func TestFilesystemCollectorReportsAPathMountedTwiceOnce(t *testing.T) {
 // device, not the hidden one's.
 func TestFilesystemCollectorLabelsAStackedPathWithTheTopMount(t *testing.T) {
 	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t,
+	useMountinfo(t,
 		mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"),
 		mountinfoLine(41, 40, mountPoint, "xfs", "/dev/vdb"),
 	)
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vdb"}, devicesReportedFor(families, mountPoint))
@@ -107,12 +100,12 @@ func TestFilesystemCollectorLabelsAStackedPathWithTheTopMount(t *testing.T) {
 // would label tmpfs numbers as that disk.
 func TestFilesystemCollectorSkipsADiskHiddenUnderAnIgnoredMount(t *testing.T) {
 	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t,
+	useMountinfo(t,
 		mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"),
 		mountinfoLine(41, 40, mountPoint, "tmpfs", "tmpfs"),
 	)
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Empty(t, devicesReportedFor(families, mountPoint))
@@ -123,12 +116,12 @@ func TestFilesystemCollectorSkipsADiskHiddenUnderAnIgnoredMount(t *testing.T) {
 // the other: its parent is the hidden mount.
 func TestFilesystemCollectorFindsTheTopMountWhenItIsListedFirst(t *testing.T) {
 	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t,
+	useMountinfo(t,
 		mountinfoLine(76, 77, mountPoint, "ext4", "/dev/vdc"),
 		mountinfoLine(77, 50, mountPoint, "ext4", "/dev/vdd"),
 	)
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vdc"}, devicesReportedFor(families, mountPoint))
@@ -138,9 +131,9 @@ func TestFilesystemCollectorFindsTheTopMountWhenItIsListedFirst(t *testing.T) {
 // must not count as hidden by itself.
 func TestFilesystemCollectorReportsAMountThatIsItsOwnParent(t *testing.T) {
 	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t, mountinfoLine(28, 28, mountPoint, "ext4", "/dev/vda"))
+	useMountinfo(t, mountinfoLine(28, 28, mountPoint, "ext4", "/dev/vda"))
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vda"}, devicesReportedFor(families, mountPoint))
@@ -151,12 +144,12 @@ func TestFilesystemCollectorReportsAMountThatIsItsOwnParent(t *testing.T) {
 // unhidden. Reporting both would bring back the failed Gather.
 func TestFilesystemCollectorReportsAPathOnceWithoutAParentLink(t *testing.T) {
 	mountPoint := t.TempDir()
-	procFS := procWithMountinfo(t,
+	useMountinfo(t,
 		mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"),
 		mountinfoLine(41, 2, mountPoint, "ext4", "/dev/vda"),
 	)
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vda"}, devicesReportedFor(families, mountPoint))
@@ -168,9 +161,9 @@ func TestFilesystemCollectorReportsAPathOnceWithoutAParentLink(t *testing.T) {
 func TestFilesystemCollectorKeepsAMountPointThatIsNotValidUTF8(t *testing.T) {
 	mountPoint := filepath.Join(t.TempDir(), "caf\xe9")
 	require.NoError(t, os.Mkdir(mountPoint, 0o755))
-	procFS := procWithMountinfo(t, mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"))
+	useMountinfo(t, mountinfoLine(40, 1, mountPoint, "ext4", "/dev/vda"))
 
-	families, err := gatherFilesystem(t, procFS)
+	families, err := gatherFilesystem(t)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/dev/vda"}, devicesReportedFor(families, strings.ToValidUTF8(mountPoint, "�")))

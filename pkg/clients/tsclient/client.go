@@ -18,29 +18,18 @@ import (
 )
 
 const (
-	// ContentType for timeseries binary data
-	ContentTypeTimeseriesBinary = "application/timeseries-binary-0"
 	// ContentTypeTimeseriesBatchV1 carries many already-compressed batches in a JSON array of base64-encoded blobs.
 	ContentTypeTimeseriesBatchV1 = "application/timeseries-batch-v1"
-	// ContentTypeDiagnosticsBinary is the content type used by SendDiagnostics.
-	ContentTypeDiagnosticsBinary = "application/diagnostics-binary-0"
 	ContentTypeJSON              = "application/json"
 
 	// Headers
 	HeaderContentType     = "Content-Type"
-	HeaderContentEncoding = "Content-Encoding"
 	HeaderUserAgent       = "User-Agent"
 	HeaderRetryAfter      = "Retry-After"
 	HeaderAuthorization   = "Authorization"
 	
 	// Values
-	ContentEncodingSnappy = "snappy"
-	UserAgentValue        = "sc-metrics-agent/1.0"
-	
-	// Defaults
-	DefaultTimeout    = 30 * time.Second
-	DefaultMaxRetries = 3
-	DefaultRetryDelay = 5 * time.Second
+	UserAgentValue = "sc-metrics-agent/1.0"
 
 	// Agent Type
 	AgentTypeSCMetricsAgent = "SC_METRICS_AGENT"
@@ -72,17 +61,6 @@ type Response struct {
 	Error        error
 }
 
-// DiagnosticPayload represents agent health information
-type DiagnosticPayload struct {
-	AgentID         string                 `json:"agent_id"`
-	Timestamp       int64                  `json:"timestamp"`
-	Status          string                 `json:"status"`
-	LastError       string                 `json:"last_error,omitempty"`
-	MetricsCount    int                    `json:"metrics_count"`
-	CollectorStatus map[string]bool        `json:"collector_status"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
-}
-
 // HeartbeatRequest represents the heartbeat payload
 type HeartbeatRequest struct {
 	AgentType string `json:"agentType"`
@@ -102,25 +80,10 @@ type HeartbeatRequest struct {
 // Returns:
 //   - A pointer to a configured Client instance.
 func NewClient(config ClientConfig, logger *zap.Logger) *Client {
-	timeout := config.Timeout
-	if timeout == 0 {
-		timeout = DefaultTimeout
-	}
-	
-	maxRetries := config.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = DefaultMaxRetries
-	}
-	
-	retryDelay := config.RetryDelay
-	if retryDelay == 0 {
-		retryDelay = DefaultRetryDelay
-	}
-
 	return &Client{
 		authMgr: config.AuthMgr,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout: config.Timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
@@ -128,28 +91,15 @@ func NewClient(config ClientConfig, logger *zap.Logger) *Client {
 			},
 		},
 		logger:     logger,
-		maxRetries: maxRetries,
-		retryDelay: retryDelay,
+		maxRetries: config.MaxRetries,
+		retryDelay: config.RetryDelay,
 	}
 }
 
-
-// Compresses metrics then sends them to the ingestor.
-func (c *Client) SendMetrics(ctx context.Context, metrics []aggregate.MetricWithValue, authToken string) (*Response, error) {
-	compressed, err := c.CompressMetrics(metrics)
-	if err != nil {
-		return nil, err
-	}
-	return c.SendCompressedMetrics(ctx, compressed, authToken)
-}
 
 // CompressMetrics JSON-encodes and Snappy-compresses metrics for wire transmission.
 // The result can be buffered directly without re-serialization.
 func (c *Client) CompressMetrics(metrics []aggregate.MetricWithValue) ([]byte, error) {
-	if len(metrics) == 0 {
-		return nil, fmt.Errorf("no metrics to send")
-	}
-
 	payload, err := json.Marshal(metrics)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal metrics: %w", err)
@@ -166,31 +116,15 @@ func (c *Client) CompressMetrics(metrics []aggregate.MetricWithValue) ([]byte, e
 	return compressed, nil
 }
 
-// Sends compressed payload; resolves endpoint each call for updated CloudAPI URL.
-func (c *Client) SendCompressedMetrics(ctx context.Context, compressed []byte, authToken string) (*Response, error) {
-	endpoint, err := c.getIngestorEndpoint()
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve ingestor endpoint: %w", err)
-	}
-	return c.sendWithRetry(ctx, compressed, ContentTypeTimeseriesBinary, authToken, endpoint)
-}
-
 // SendCompressedBatches POSTs many already-compressed batches in a single
 // envelope. ["<base64(snappy(json(metrics)))>", "<base64(...)>", ...]
 func (c *Client) SendCompressedBatches(ctx context.Context, batches [][]byte, authToken string) (*Response, error) {
-	if len(batches) == 0 {
-		return nil, fmt.Errorf("no batches to send")
-	}
-
 	endpoint, err := c.getIngestorEndpoint()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve ingestor endpoint: %w", err)
 	}
 
-	envelope, err := buildBatchEnvelope(batches)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build batch envelope: %w", err)
-	}
+	envelope := buildBatchEnvelope(batches)
 
 	c.logger.Debug("Sending batch envelope",
 		zap.Int("batch_count", len(batches)),
@@ -202,12 +136,14 @@ func (c *Client) SendCompressedBatches(ctx context.Context, batches [][]byte, au
 
 // buildBatchEnvelope wraps a slice of Snappy blobs into the
 // timeseries-batch-v1 wire format.
-func buildBatchEnvelope(batches [][]byte) ([]byte, error) {
+func buildBatchEnvelope(batches [][]byte) []byte {
 	encoded := make([]string, len(batches))
 	for i, blob := range batches {
 		encoded[i] = base64.StdEncoding.EncodeToString(blob)
 	}
-	return json.Marshal(encoded)
+	// Marshalling a []string can't fail.
+	envelope, _ := json.Marshal(encoded)
+	return envelope
 }
 
 // IngestEndpointAvailable reports whether the CloudAPI URL has been resolved
@@ -219,10 +155,6 @@ func (c *Client) IngestEndpointAvailable() bool {
 
 // SendHeartbeat sends agent heartbeat to the backend
 func (c *Client) SendHeartbeat(ctx context.Context, authToken, version string) (*Response, error) {
-	if c.authMgr == nil {
-		return nil, fmt.Errorf("AuthManager is required for heartbeat")
-	}
-
 	cloudAPIURL := c.authMgr.GetCloudAPIURL()
 	if cloudAPIURL == "" {
 		return nil, fmt.Errorf("empty CloudAPI URL from metadata")
@@ -243,36 +175,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, authToken, version string) (
 	c.logger.Debug("Sending heartbeat", zap.String("url", url))
 
 	return c.sendRequest(ctx, body, ContentTypeJSON, authToken, url)
-}
-
-// SendDiagnostics sends diagnostic information to the ingestor
-func (c *Client) SendDiagnostics(ctx context.Context, diagnostics DiagnosticPayload, authToken string) (*Response, error) {
-	c.logger.Debug("Sending diagnostics", zap.String("agent_id", diagnostics.AgentID))
-
-	// Serialize diagnostics to JSON
-	payload, err := json.Marshal(diagnostics)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal diagnostics: %w", err)
-	}
-
-	// Log the diagnostics payload
-	c.logger.Debug("Sending diagnostics payload",
-		zap.String("agent_id", diagnostics.AgentID),
-		zap.String("status", diagnostics.Status),
-		zap.Int("payload_size_bytes", len(payload)),
-		zap.String("payload", string(payload)),
-	)
-
-	// Compress with Snappy
-	compressed := snappy.Encode(nil, payload)
-
-	// Get the ingestor endpoint
-	endpoint, err := c.getIngestorEndpoint()
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve ingestor endpoint: %w", err)
-	}
-
-	return c.sendWithRetry(ctx, compressed, ContentTypeDiagnosticsBinary, authToken, endpoint)
 }
 
 // sendWithRetry handles the HTTP request with retry logic
@@ -344,11 +246,6 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 
 	// Set headers
 	req.Header.Set(HeaderContentType, contentType)
-	// Only set compression header for binary content types (not JSON)
-	switch contentType {
-	case ContentTypeTimeseriesBinary, ContentTypeDiagnosticsBinary:
-		req.Header.Set(HeaderContentEncoding, ContentEncodingSnappy)
-	}
 	req.Header.Set(HeaderUserAgent, UserAgentValue)
 	
 	if authToken != "" {
@@ -366,11 +263,7 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			c.logger.Warn("Failed to close response body", zap.Error(closeErr))
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
@@ -399,10 +292,6 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 
 // getIngestorEndpoint resolves the ingestor endpoint from CloudAPI URL
 func (c *Client) getIngestorEndpoint() (string, error) {
-	if c.authMgr == nil {
-		return "", fmt.Errorf("AuthManager is required for endpoint resolution")
-	}
-
 	cloudAPIURL := c.authMgr.GetCloudAPIURL()
 	if cloudAPIURL == "" {
 		return "", fmt.Errorf("empty CloudAPI URL from metadata")
@@ -453,19 +342,5 @@ func parseRetryAfter(value string) time.Duration {
 func (c *Client) Close() error {
 	c.httpClient.CloseIdleConnections()
 	return nil
-}
-
-// SetMaxRetries updates the maximum retry count
-func (c *Client) SetMaxRetries(maxRetries int) {
-	if maxRetries >= 0 {
-		c.maxRetries = maxRetries
-	}
-}
-
-// SetRetryDelay updates the retry delay
-func (c *Client) SetRetryDelay(delay time.Duration) {
-	if delay > 0 {
-		c.retryDelay = delay
-	}
 }
 

@@ -1,25 +1,22 @@
 # SC Metrics Agent Configuration
-# Point SC_AGENT_CONFIG at a copy of this file. It replaces
-# /etc/strettchcloud/config/agent.yaml, so it must keep metadata_service.base_url.
-metadata_service:
-  base_url: "http://<metadata-service-host>:8000"
+# Copy the settings you need to /etc/sc-metrics-agent/config.yaml, then restart
+# the service. SC_AGENT_CONFIG can point at another file instead.
+
+# The metadata service address comes from /etc/strettchcloud/config/agent.yaml.
+# Set it here only to replace that address, for example in a test.
+# metadata_service:
+#   base_url: "http://<metadata-service-host>:8000"
 
 # Collection settings
 collection_interval: 30s
 http_timeout: 30s
 
 
-# Metadata service endpoint for authentication
-metadata_service_endpoint: "http://169.254.169.254/metadata/v1/auth-token"
+# Full metadata service endpoint. Replaces the one built from base_url.
+# metadata_service_endpoint: "http://<metadata-service-host>:8000/metadata/v1/auth-token"
 
 # Agent identification - VM ID will be automatically detected if not specified
 vm_id: ""
-
-# Auto-update settings
-auto_update:
-  enabled: true
-  check_interval: "1h"
-  channel: "stable"  # Options: "stable", "beta"
 
 # Additional labels to attach to all metrics
 labels:

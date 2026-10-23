@@ -136,3 +136,16 @@ func TestLoadAcceptsTheLogLevelInAnyCase(t *testing.T) {
 		})
 	}
 }
+
+// config.example.yaml is what people copy into config.yaml, so all of it must
+// load and keep the address from agent.yaml.
+func TestLoadAcceptsTheWholeExampleConfig(t *testing.T) {
+	example, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	require.NoError(t, err)
+	useConfigFiles(t, agentYAMLWithAddress, string(example))
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "http://metadata.test.invalid/metadata/v1/auth-token", cfg.MetadataServiceEndpoint)
+}

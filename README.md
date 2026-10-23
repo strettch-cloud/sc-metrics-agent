@@ -79,7 +79,9 @@ Remove it with `sudo apt-get purge sc-metrics-agent`.
 The agent works without configuration. The installer writes the metadata service address to
 `/etc/strettchcloud/config/agent.yaml`; everything else has a default.
 
-To override a setting, add it to `/etc/sc-metrics-agent/environment` and restart the service:
+To override a setting, add it to `/etc/sc-metrics-agent/config.yaml` (the settings are in
+[`config.example.yaml`](config.example.yaml)) or as a variable to `/etc/sc-metrics-agent/environment`,
+then restart the service. A variable wins over the file.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -88,7 +90,7 @@ To override a setting, add it to `/etc/sc-metrics-agent/environment` and restart
 | `SC_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `SC_VM_ID` | from `dmidecode` | Set this if `dmidecode -s system-uuid` returns nothing on your VM |
 | `SC_COLLECTOR_<NAME>` | `true` | Turn one collector group off, e.g. `SC_COLLECTOR_THERMAL=false` |
-| `SC_AGENT_CONFIG` | — | Path to a YAML file used *instead of* `/etc/strettchcloud/config/agent.yaml`. It must contain `metadata_service.base_url` (copy it from that file) and may add any setting from [`config.example.yaml`](config.example.yaml). |
+| `SC_AGENT_CONFIG` | `/etc/sc-metrics-agent/config.yaml` | Path to the settings file. Unlike the default one, a file named here must exist. If it sets `metadata_service.base_url`, that address replaces the one in `/etc/strettchcloud/config/agent.yaml`. |
 
 ## Verifying packages
 

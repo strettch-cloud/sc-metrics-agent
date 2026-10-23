@@ -100,10 +100,6 @@ func NewClient(config ClientConfig, logger *zap.Logger) *Client {
 // CompressMetrics JSON-encodes and Snappy-compresses metrics for wire transmission.
 // The result can be buffered directly without re-serialization.
 func (c *Client) CompressMetrics(metrics []aggregate.MetricWithValue) ([]byte, error) {
-	if len(metrics) == 0 {
-		return nil, fmt.Errorf("no metrics to send")
-	}
-
 	payload, err := json.Marshal(metrics)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal metrics: %w", err)
@@ -123,19 +119,12 @@ func (c *Client) CompressMetrics(metrics []aggregate.MetricWithValue) ([]byte, e
 // SendCompressedBatches POSTs many already-compressed batches in a single
 // envelope. ["<base64(snappy(json(metrics)))>", "<base64(...)>", ...]
 func (c *Client) SendCompressedBatches(ctx context.Context, batches [][]byte, authToken string) (*Response, error) {
-	if len(batches) == 0 {
-		return nil, fmt.Errorf("no batches to send")
-	}
-
 	endpoint, err := c.getIngestorEndpoint()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve ingestor endpoint: %w", err)
 	}
 
-	envelope, err := buildBatchEnvelope(batches)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build batch envelope: %w", err)
-	}
+	envelope := buildBatchEnvelope(batches)
 
 	c.logger.Debug("Sending batch envelope",
 		zap.Int("batch_count", len(batches)),
@@ -147,12 +136,14 @@ func (c *Client) SendCompressedBatches(ctx context.Context, batches [][]byte, au
 
 // buildBatchEnvelope wraps a slice of Snappy blobs into the
 // timeseries-batch-v1 wire format.
-func buildBatchEnvelope(batches [][]byte) ([]byte, error) {
+func buildBatchEnvelope(batches [][]byte) []byte {
 	encoded := make([]string, len(batches))
 	for i, blob := range batches {
 		encoded[i] = base64.StdEncoding.EncodeToString(blob)
 	}
-	return json.Marshal(encoded)
+	// Marshalling a []string can't fail.
+	envelope, _ := json.Marshal(encoded)
+	return envelope
 }
 
 // IngestEndpointAvailable reports whether the CloudAPI URL has been resolved

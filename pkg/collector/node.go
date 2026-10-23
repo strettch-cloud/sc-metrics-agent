@@ -27,6 +27,13 @@ var ignoredFSTypes = map[string]bool{
 	"nfs": true, "nfs4": true, "cifs": true, "smb": true,
 }
 
+// These are variables only so tests can stand in for /proc/self/mountinfo, and
+// for /proc and /sys.
+var (
+	getMounts       = procfs.GetMounts
+	newBlockDevices = func() (blockdevice.FS, error) { return blockdevice.NewFS("/proc", "/sys") }
+)
+
 // getInterfaceIPAddress retrieves the first non-loopback IPv4 address of an interface
 func getInterfaceIPAddress(interfaceName string) (string, error) {
 	iface, err := net.InterfaceByName(interfaceName)
@@ -322,7 +329,7 @@ func (c *diskStatsCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c *diskStatsCollector) Collect(ch chan<- prometheus.Metric) {
 	// Get mounted devices to filter disk stats
-	mounts, err := procfs.GetMounts()
+	mounts, err := getMounts()
 	if err != nil {
 		c.logger.Debug("Failed to get mount information", zap.Error(err))
 		return
@@ -349,7 +356,7 @@ func (c *diskStatsCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	// Use blockdevice package to get disk stats
-	blockFS, err := blockdevice.NewFS("/proc", "/sys")
+	blockFS, err := newBlockDevices()
 	if err != nil {
 		c.logger.Debug("Failed to initialize blockdevice FS", zap.Error(err))
 		return
@@ -444,7 +451,7 @@ func (c *filesystemCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *filesystemCollector) Collect(ch chan<- prometheus.Metric) {
-	mounts, err := procfs.GetMounts()
+	mounts, err := getMounts()
 	if err != nil {
 		c.logger.Debug("Failed to get mount information", zap.Error(err))
 		return

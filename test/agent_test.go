@@ -137,6 +137,12 @@ type agentProcess struct {
 type agentOptions struct {
 	vmID      string
 	bufferDir string
+	// withoutAgentYAML leaves out agent.yaml, as when the installer couldn't
+	// write it.
+	withoutAgentYAML bool
+	// environment is added to the agent's settings, after them.
+	environment []string
+	arguments   []string
 }
 
 // startAgent runs the agent with only the settings a test gives it, so the
@@ -148,8 +154,10 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 		options.bufferDir = filepath.Join(workDirectory, "buffer")
 	}
 	agentYAMLPath := filepath.Join(workDirectory, "agent.yaml")
-	agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", cloud.metadata.URL())
-	require.NoError(t, os.WriteFile(agentYAMLPath, []byte(agentYAML), 0o600))
+	if !options.withoutAgentYAML {
+		agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", cloud.metadata.URL())
+		require.NoError(t, os.WriteFile(agentYAMLPath, []byte(agentYAML), 0o600))
+	}
 	// dmidecode stands in for the VM's firmware: it prints the VM ID, or
 	// nothing when the test has none.
 	dmidecodePath := filepath.Join(workDirectory, "dmidecode")
@@ -168,11 +176,12 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 		"SC_TEST_MAX_RETRIES=1",
 		"SC_TEST_RETRY_INTERVAL=100ms",
 	}
+	environment = append(environment, options.environment...)
 
 	logPath := filepath.Join(workDirectory, "agent.log")
 	logFile, err := os.Create(logPath)
 	require.NoError(t, err)
-	command := exec.Command(agentBinary(t))
+	command := exec.Command(agentBinary(t), options.arguments...)
 	command.Env = withAgentCoverage(environment)
 	// Through a pipe, not the file itself: under systemd the agent writes to a
 	// socket, and a file hides errors that only a pipe or a socket causes.
@@ -356,4 +365,58 @@ func TestAgentPrintsTheVersionItWasBuiltWith(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "Version: "+testVersion)
+}
+
+func TestValidateConfigChecksTheGivenConfigYAML(t *testing.T) {
+	t.Parallel()
+	for name, testCase := range map[string]struct {
+		configYAML string
+		exitCode   int
+		output     string
+	}{
+		"only the log level": {"log_level: debug\n", 0, "Configuration is valid"},
+		"another setting":    {"collection_interval: 1ms\n", 1, "may only set log_level"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			configYAML := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(configYAML, []byte(testCase.configYAML), 0o600))
+			agent := startAgent(t, newFakeCloud(t), agentOptions{vmID: testVMID, arguments: []string{"--validate-config", configYAML}})
+
+			assert.Equal(t, testCase.exitCode, agent.waitForExit(t, waitForAgent))
+			assert.Contains(t, agent.log(t), testCase.output)
+		})
+	}
+}
+
+// Without agent.yaml, which the installer writes, the agent can't find the
+// metadata service, so it exits and says which file is missing.
+func TestAgentExitsWithoutAgentYAML(t *testing.T) {
+	t.Parallel()
+	cloud := newFakeCloud(t)
+	agent := startAgent(t, cloud, agentOptions{vmID: testVMID, withoutAgentYAML: true})
+
+	assert.Equal(t, 1, agent.waitForExit(t, waitForAgent))
+	assert.Contains(t, agent.log(t), "Failed to load configuration")
+	assert.Contains(t, agent.log(t), "agent.yaml")
+	assert.Empty(t, cloud.metadata.IssuedTokens())
+}
+
+func TestAgentExitsWhenItCantCreateItsBuffer(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	agent := startAgent(t, newFakeCloud(t), agentOptions{vmID: testVMID, bufferDir: filepath.Join(file, "buffer")})
+
+	assert.Equal(t, 1, agent.waitForExit(t, waitForAgent))
+	assert.Contains(t, agent.log(t), "Failed to open disk buffer")
+}
+
+func TestSCLogLevelDebugWritesDebugLines(t *testing.T) {
+	t.Parallel()
+	cloud := newFakeCloud(t)
+	agent := startAgent(t, cloud, agentOptions{vmID: testVMID, environment: []string{"SC_LOG_LEVEL=debug"}})
+
+	require.Eventually(t, func() bool { return len(cloud.metricsReceived()) > 0 }, waitForAgent, pollEvery)
+	assert.Contains(t, agent.log(t), `"level":"debug"`)
 }

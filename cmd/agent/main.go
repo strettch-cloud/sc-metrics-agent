@@ -78,13 +78,11 @@ func main() {
 		zap.Any("collectors", cfg.Collectors),
 	)
 
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Set up signal handling
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// SIGINT or SIGTERM cancels ctx at once, which ends a send waiting to
+	// retry. Waiting out the retries could take longer than systemd's 90
+	// second stop timeout, after which it kills the agent.
+	ctx, stopListeningForSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopListeningForSignals()
 
 	// Initialize components
 	systemCollector, err := collector.NewSystemCollector(cfg.Collectors, logger)
@@ -132,28 +130,23 @@ func main() {
 
 	logger.Info("Agent started successfully")
 
-	// Simple main execution loop
-	for {
+	// The loop condition checks ctx too: when a tick and the signal are both
+	// ready, select picks one at random, and could start another round.
+	for ctx.Err() == nil {
 		select {
 		case <-ticker.C:
 			if err := pipelineProcessor.Process(ctx); err != nil {
 				logger.Error("Failed to process metrics pipeline", zap.Error(err))
 			}
-
-		case sig := <-sigChan:
-			logger.Info("Received shutdown signal, cleaning up", zap.String("signal", sig.String()))
-			cancel()
-			
-			// Clean up resources
-			if err := pipelineProcessor.Close(); err != nil {
-				logger.Error("Error during cleanup", zap.Error(err))
-			}
-			
-			logger.Info("Agent shutdown complete")
-			return
-
+		case <-ctx.Done():
 		}
 	}
+
+	logger.Info("Received shutdown signal, cleaning up")
+	if err := pipelineProcessor.Close(); err != nil {
+		logger.Error("Error during cleanup", zap.Error(err))
+	}
+	logger.Info("Agent shutdown complete")
 }
 
 func initLogger(logLevel string) *zap.Logger {

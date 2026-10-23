@@ -345,6 +345,30 @@ func TestAgentStopsCleanlyOnSIGTERM(t *testing.T) {
 	assert.NotContains(t, agent.log(t), "Failed to sync logger")
 }
 
+// Between attempts to send a batch the agent waits 5 seconds, or as long as
+// the ingest's Retry-After asks. SIGTERM must not wait for that, or systemd
+// kills the agent after 90 seconds. The batch stays buffered for the next run.
+func TestAgentStopsPromptlyWhileWaitingToRetryASend(t *testing.T) {
+	t.Parallel()
+	cloud := newFakeCloud(t)
+	bufferDir := filepath.Join(t.TempDir(), "buffer")
+	cloud.ingest.SetUnavailable(true)
+	waitingAnHour := startAgent(t, cloud, agentOptions{
+		vmID: testVMID, bufferDir: bufferDir, environment: []string{"SC_TEST_RETRY_INTERVAL=1h"},
+	})
+	require.Eventually(t, func() bool { return cloud.ingest.RejectedIngestCount() >= 1 }, waitForAgent, pollEvery)
+	stopRequested := time.Now()
+
+	require.Equal(t, 0, waitingAnHour.stop(t))
+	assert.Contains(t, waitingAnHour.log(t), "Agent shutdown complete")
+
+	cloud.ingest.SetUnavailable(false)
+	startAgent(t, cloud, agentOptions{vmID: testVMID, bufferDir: bufferDir})
+	require.Eventually(t, func() bool {
+		return metricsCollectedBefore(cloud.metricsReceived(), stopRequested) > 0
+	}, waitForAgent, pollEvery, "the batch the agent was sending when it stopped was never delivered")
+}
+
 func TestAgentRefusesToStartWithoutAVMID(t *testing.T) {
 	t.Parallel()
 	cloud := newFakeCloud(t)

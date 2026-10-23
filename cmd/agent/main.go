@@ -29,16 +29,9 @@ var (
 	buildTime = "unknown"
 )
 
-// validateConfigFile validates a configuration file without running the agent
+// validateConfigFile validates a settings file without running the agent
 func validateConfigFile(configPath string) error {
-	// Set the config path environment variable so config.Load() uses it
-	if err := os.Setenv("SC_AGENT_CONFIG", configPath); err != nil {
-		return fmt.Errorf("failed to set config path: %w", err)
-	}
-	
-	// Load and validate the configuration
-	_, err := config.Load()
-	return err
+	return config.Validate(configPath)
 }
 
 
@@ -74,7 +67,7 @@ func main() {
 		if strings.Contains(err.Error(), "vm_id cannot be determined") {
 			logger.Fatal("Failed to load configuration - VM ID detection failed",
 				zap.Error(err),
-				zap.String("help", "Ensure dmidecode is installed and accessible, or set vm_id manually in config.yaml or SC_VM_ID environment variable"),
+				zap.String("help", "Ensure dmidecode is installed and accessible, or set SC_VM_ID in /etc/sc-metrics-agent/environment"),
 				zap.String("dmidecode_check", "Run 'dmidecode -s system-uuid' to test VM ID detection"),
 			)
 		} else {

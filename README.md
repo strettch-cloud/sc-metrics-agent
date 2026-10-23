@@ -76,21 +76,20 @@ Remove it with `sudo apt-get purge sc-metrics-agent`.
 
 ## Configuration
 
-The agent works without configuration. The installer writes the metadata service address to
-`/etc/strettchcloud/config/agent.yaml`; everything else has a default.
+The agent's settings are fixed: how often it collects, what it collects, where it buffers and
+how it retries are the same on every VM, so a mistaken edit can't make many agents overload
+the platform. The installer writes the metadata service address to
+`/etc/strettchcloud/config/agent.yaml`, and the VM ID comes from `dmidecode -s system-uuid`.
 
-To override a setting, add it to `/etc/sc-metrics-agent/config.yaml` (the settings are in
-[`config.example.yaml`](config.example.yaml)) or as a variable to `/etc/sc-metrics-agent/environment`,
-then restart the service. A variable wins over the file.
+The log level is the only setting you can change. Set `log_level` in
+`/etc/sc-metrics-agent/config.yaml` (see [`config.example.yaml`](config.example.yaml)), or
+`SC_LOG_LEVEL` in `/etc/sc-metrics-agent/environment`, then restart the service. The variable wins
+over the file.
 
-| Variable | Default | Meaning |
+| Setting | Values | Notes |
 |---|---|---|
-| `SC_COLLECTION_INTERVAL` | `30s` | How often metrics are collected |
-| `SC_LABELS` | — | Extra labels for every metric, e.g. `env=prod,team=web` |
-| `SC_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
-| `SC_VM_ID` | from `dmidecode` | Set this if `dmidecode -s system-uuid` returns nothing on your VM |
-| `SC_COLLECTOR_<NAME>` | `true` | Turn one collector group off, e.g. `SC_COLLECTOR_THERMAL=false` |
-| `SC_AGENT_CONFIG` | `/etc/sc-metrics-agent/config.yaml` | Path to the settings file. Unlike the default one, a file named here must exist. If it sets `metadata_service.base_url`, that address replaces the one in `/etc/strettchcloud/config/agent.yaml`. |
+| `log_level` in config.yaml, or `SC_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error` | A config.yaml that sets anything else, or a level the agent doesn't know, is ignored as a whole: the agent logs why and runs on its defaults. `sc-metrics-agent --validate-config /etc/sc-metrics-agent/config.yaml` reports the problem. |
+| `SC_VM_ID` | the VM's ID | Used only when `dmidecode` finds no ID. Where it finds one, `SC_VM_ID` is ignored. |
 
 ## Verifying packages
 
@@ -114,10 +113,11 @@ mise run lint
 mise run security-scan # Trivy + govulncheck
 ```
 
-Run a local build with `sudo ./build/sc-metrics-agent`; `-validate-config <file>` checks a
-configuration file and exits. The file must contain `metadata_service.base_url`, as described for
-`SC_AGENT_CONFIG` above. How CI builds and publishes releases is described in
-[.github/README.md](.github/README.md).
+Run a local build with `sudo ./build/sc-metrics-agent`; it needs
+`/etc/strettchcloud/config/agent.yaml`. `-validate-config <file>` checks a config.yaml and exits.
+The end-to-end tests build the agent with the `e2e` tag, which adds `SC_TEST_*` variables for fake
+servers and short intervals (`pkg/config/overrides_e2e.go`); release builds don't have them. How CI
+builds and publishes releases is described in [.github/README.md](.github/README.md).
 
 ## Contributing and security
 

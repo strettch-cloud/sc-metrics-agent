@@ -56,15 +56,16 @@ run = "SC_LOG_LEVEL=debug exec $BUILD_DIR/$BINARY_NAME"
 [tasks.fmt]
 run = "golangci-lint fmt"
 
-# The lifecycle tag includes test/lifecycle, which only builds with it.
+# The lifecycle tag includes test/lifecycle, which only builds with it; the
+# e2e tag includes pkg/config/overrides_e2e.go, the test-only overrides.
 [tasks.lint]
 description = "Check only (CI-safe)"
 depends = ["deps"]
-run = "golangci-lint run --build-tags=lifecycle"
+run = "golangci-lint run --build-tags=lifecycle,e2e"
 
 [tasks.lint-fix]
 description = "Lint and auto-fix"
-run = "golangci-lint run --build-tags=lifecycle --fix"
+run = "golangci-lint run --build-tags=lifecycle,e2e --fix"
 
 [tasks.lint-packaging]
 description = "shellcheck every script, and check the systemd units (CI-safe)"
@@ -87,7 +88,7 @@ description = "Tests with the race detector; coverage in coverage.out, total pri
 depends = ["deps"]
 # The run fails when total coverage drops below this. Raise it with every pull
 # request that adds tests, until it reaches the 98 target.
-env = { COVERAGE_MINIMUM = "71.5" }
+env = { COVERAGE_MINIMUM = "73.1" }
 run = '''
 set -e
 # -coverpkg=./... credits a test with every package it runs, not only its own,

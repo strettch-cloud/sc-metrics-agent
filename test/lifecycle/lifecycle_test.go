@@ -257,6 +257,14 @@ func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 		assert.Equal(t, strings.TrimSpace(cloud.agentYAML), box.mustExec(t, "cat", "/etc/strettchcloud/config/agent.yaml"))
 	})
 
+	// The updater validates this file after every update. It holds no metadata
+	// address, and validation used to panic looking for one in it. SC_VM_ID
+	// stands in for dmidecode, as in configureAgent.
+	t.Run("validates the config the installer writes", func(t *testing.T) {
+		output, exitCode := box.exec(t, []string{"SC_VM_ID=" + testVMID}, "sc-metrics-agent", "--validate-config", "/etc/sc-metrics-agent/config.yaml")
+		assert.Equal(t, 0, exitCode, output)
+	})
+
 	t.Run("starts the agent and its update timer", func(t *testing.T) {
 		box.requireRunningAndEnabled(t, agentService)
 		box.requireRunningAndEnabled(t, updaterTimer)

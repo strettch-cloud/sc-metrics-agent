@@ -123,8 +123,8 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 	if options.bufferDir == "" {
 		options.bufferDir = filepath.Join(workDirectory, "buffer")
 	}
-	// One file holds both agent.yaml's metadata address and the agent's own
-	// settings, because the agent reads both from SC_AGENT_CONFIG.
+	// The settings file carries the metadata address itself, so the test
+	// needs no agent.yaml.
 	configPath := filepath.Join(workDirectory, "config.yaml")
 	config := fmt.Sprintf("metadata_service:\n  base_url: %q\nbuffer_dir: %q\n", cloud.metadata.URL(), options.bufferDir)
 	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))

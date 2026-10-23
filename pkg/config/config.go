@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -20,7 +22,13 @@ type AgentConfig struct {
 	} `yaml:"metadata_service"`
 }
 
-const agentConfigPath = "/etc/strettchcloud/config/agent.yaml"
+// agentConfigPath is where the installer saves agent.yaml, which holds the
+// metadata service address. A variable so tests can use a temporary file.
+var agentConfigPath = "/etc/strettchcloud/config/agent.yaml"
+
+// settingsPath is the settings file the package installs; SC_AGENT_CONFIG
+// replaces it. A variable so tests can use a temporary file.
+var settingsPath = "/etc/sc-metrics-agent/config.yaml"
 
 // Config represents the agent configuration
 type Config struct {
@@ -95,24 +103,18 @@ type CollectorConfig struct {
 
 // readMetadataBaseURL reads the metadata service base URL from agent.yaml
 func readMetadataBaseURL() (string, error) {
-	// Use SC_AGENT_CONFIG if set, otherwise use default path
-	configPath := agentConfigPath
-	if envPath := os.Getenv("SC_AGENT_CONFIG"); envPath != "" {
-		configPath = envPath
-	}
-
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(agentConfigPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read agent config file %s: %w", configPath, err)
+		return "", fmt.Errorf("failed to read agent config file %s: %w", agentConfigPath, err)
 	}
 
 	var config AgentConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return "", fmt.Errorf("failed to parse agent config: %w", err)
+		return "", fmt.Errorf("failed to parse agent config %s: %w", agentConfigPath, err)
 	}
 
 	if config.MetadataService.BaseURL == "" {
-		return "", fmt.Errorf("metadata_service.base_url not found in agent config")
+		return "", fmt.Errorf("metadata_service.base_url not found in %s", agentConfigPath)
 	}
 
 	return config.MetadataService.BaseURL, nil
@@ -123,21 +125,11 @@ func DefaultConfig() *Config {
 	vmID := getVMIDFromDMIDecode()
 	// If empty, it will be caught in validation
 
-	// Read metadata service base URL from agent.yaml
-	metadataBaseURL, err := readMetadataBaseURL()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to read metadata service configuration: %v", err))
-	}
-
-	// Construct full metadata endpoint URL
-	metadataEndpoint := metadataBaseURL + "/metadata/v1/auth-token"
-
 	return &Config{
-		CollectionInterval:      30 * time.Second,
-		HTTPTimeout:             30 * time.Second,
-		MetadataServiceEndpoint: metadataEndpoint,
-		VMID:                    vmID,
-		Labels:                  make(map[string]string),
+		CollectionInterval: 30 * time.Second,
+		HTTPTimeout:        30 * time.Second,
+		VMID:               vmID,
+		Labels:             make(map[string]string),
 		Collectors: CollectorConfig{
 			// Process metrics (required for this story)
 			Processes: true,
@@ -211,7 +203,7 @@ func getVMIDFromDMIDecode() string {
 		}
 
 		vmID := strings.TrimSpace(string(output))
-		
+
 		// Check for common invalid or unset dmidecode outputs
 		if vmID != "" && vmID != "Not Settable" && vmID != "Not Specified" && !strings.HasPrefix(vmID, "00000000-0000-0000") {
 			return vmID
@@ -244,15 +236,28 @@ func detectAgentVersion() string {
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
-	// Try to load from config file first
-	if configPath := os.Getenv("SC_AGENT_CONFIG"); configPath != "" {
-		if err := cfg.loadFromFile(configPath); err != nil {
-			return nil, fmt.Errorf("failed to load config file %s: %w", configPath, err)
-		}
+	configPath := os.Getenv("SC_AGENT_CONFIG")
+	configPathRequired := configPath != ""
+	if !configPathRequired {
+		configPath = settingsPath
+	}
+	metadataBaseURL, err := cfg.loadFromFile(configPath)
+	// The package installs the settings file, but the agent also runs without it.
+	if err != nil && (configPathRequired || !errors.Is(err, fs.ErrNotExist)) {
+		return nil, fmt.Errorf("failed to load config file %s: %w", configPath, err)
 	}
 
 	// Override with environment variables
 	cfg.loadFromEnv()
+
+	if cfg.MetadataServiceEndpoint == "" {
+		if metadataBaseURL == "" {
+			if metadataBaseURL, err = readMetadataBaseURL(); err != nil {
+				return nil, err
+			}
+		}
+		cfg.MetadataServiceEndpoint = metadataBaseURL + "/metadata/v1/auth-token"
+	}
 
 	// The logger only knows lowercase level names.
 	cfg.LogLevel = strings.ToLower(cfg.LogLevel)
@@ -265,18 +270,19 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// loadFromFile loads configuration from a YAML file
-func (c *Config) loadFromFile(path string) error {
+// loadFromFile loads configuration from a YAML file, and returns the metadata
+// service base URL when the file sets one.
+func (c *Config) loadFromFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Preserve the detected VM ID before unmarshaling
 	detectedVMID := c.VMID
 
 	if err := yaml.Unmarshal(data, c); err != nil {
-		return err
+		return "", err
 	}
 
 	// If config file has empty vm_id, restore the detected one
@@ -284,7 +290,11 @@ func (c *Config) loadFromFile(path string) error {
 		c.VMID = detectedVMID
 	}
 
-	return nil
+	var agentConfig AgentConfig
+	if err := yaml.Unmarshal(data, &agentConfig); err != nil {
+		return "", err
+	}
+	return agentConfig.MetadataService.BaseURL, nil
 }
 
 // loadFromEnv loads configuration from environment variables
@@ -294,7 +304,6 @@ func (c *Config) loadFromEnv() {
 			c.CollectionInterval = duration
 		}
 	}
-
 
 	if val := os.Getenv("SC_METADATA_SERVICE_ENDPOINT"); val != "" {
 		c.MetadataServiceEndpoint = val
@@ -479,7 +488,6 @@ func (c *Config) validate() error {
 	if c.HTTPTimeout <= 0 {
 		return fmt.Errorf("http_timeout must be positive")
 	}
-
 
 	if c.VMID == "" {
 		return fmt.Errorf("vm_id cannot be determined: dmidecode failed to return a valid UUID. Please set vm_id manually in config.yaml or use SC_VM_ID environment variable")

@@ -12,26 +12,11 @@ import (
 )
 
 func TestDefaultConfig(t *testing.T) {
-	// Create temporary agent.yaml for DefaultConfig
-	tmpDir := t.TempDir()
-	agentConfigPath := filepath.Join(tmpDir, "agent.yaml")
-	agentYAMLContent := `metadata_service:
-  base_url: http://test.example.com
-`
-	require.NoError(t, os.WriteFile(agentConfigPath, []byte(agentYAMLContent), 0644))
-	require.NoError(t, os.Setenv("SC_AGENT_CONFIG", agentConfigPath))
-	defer func() {
-		if err := os.Unsetenv("SC_AGENT_CONFIG"); err != nil {
-			t.Logf("Failed to unset SC_AGENT_CONFIG: %v", err)
-		}
-	}()
-
 	cfg := DefaultConfig()
 
 	assert.NotNil(t, cfg)
 	assert.Equal(t, 30*time.Second, cfg.CollectionInterval)
 	assert.Equal(t, 30*time.Second, cfg.HTTPTimeout)
-	assert.Equal(t, "http://test.example.com/metadata/v1/auth-token", cfg.MetadataServiceEndpoint)
 	// VM ID might be empty on test systems without dmidecode
 	if cfg.VMID == "" {
 		cfg.VMID = "test-vm-id"
@@ -134,19 +119,45 @@ func TestLoad_FromEnvironment(t *testing.T) {
 }
 
 func TestLoad_FromFile(t *testing.T) {
-	t.Skip("Skipping test - SC_AGENT_CONFIG serves dual purpose (agent.yaml and config.yaml)")
+	useConfigFiles(t, agentYAMLWithAddress, "collection_interval: 45s\nlabels:\n  team: web\ncollectors:\n  thermal: false\n")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, 45*time.Second, cfg.CollectionInterval)
+	assert.Equal(t, map[string]string{"team": "web"}, cfg.Labels)
+	assert.False(t, cfg.Collectors.Thermal)
+	assert.True(t, cfg.Collectors.CPU, "a collector the file doesn't mention keeps its default")
 }
 
 func TestLoad_EnvironmentOverridesFile(t *testing.T) {
-	t.Skip("Skipping test - SC_AGENT_CONFIG serves dual purpose (agent.yaml and config.yaml)")
+	useConfigFiles(t, agentYAMLWithAddress, "collection_interval: 45s\n")
+	t.Setenv("SC_COLLECTION_INTERVAL", "60s")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, 60*time.Second, cfg.CollectionInterval)
 }
 
 func TestLoad_InvalidConfigFile(t *testing.T) {
-	t.Skip("Skipping test - SC_AGENT_CONFIG serves dual purpose (agent.yaml and config.yaml)")
+	useConfigFiles(t, agentYAMLWithAddress, "collection_interval: [\n")
+
+	_, err := Load()
+
+	assert.ErrorContains(t, err, settingsPath)
 }
 
+// The package's own settings file is optional, but a file named in
+// SC_AGENT_CONFIG must exist: a typo there shouldn't silently fall back.
 func TestLoad_NonexistentConfigFile(t *testing.T) {
-	t.Skip("Skipping test - SC_AGENT_CONFIG serves dual purpose (agent.yaml and config.yaml)")
+	useConfigFiles(t, agentYAMLWithAddress, "")
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	t.Setenv("SC_AGENT_CONFIG", missing)
+
+	_, err := Load()
+
+	assert.ErrorContains(t, err, missing)
 }
 
 func TestParseLabels(t *testing.T) {
@@ -201,7 +212,7 @@ func TestParseLabels(t *testing.T) {
 			expected: map[string]string{"key2": "value2"},
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := parseLabels(tt.input)
@@ -230,57 +241,56 @@ func TestValidate(t *testing.T) {
 	validConfig.VMID = "test-vm-validation" // Set test VM ID
 	err := validConfig.validate()
 	assert.NoError(t, err)
-	
+
 	// Test invalid collection interval
 	invalidConfig := *validConfig
 	invalidConfig.CollectionInterval = 0
 	err = invalidConfig.validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "collection_interval must be positive")
-	
+
 	// Test invalid HTTP timeout
 	invalidConfig = *validConfig
 	invalidConfig.HTTPTimeout = 0
 	err = invalidConfig.validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "http_timeout must be positive")
-	
-	
+
 	// Test empty VM ID
 	invalidConfig = *validConfig
 	invalidConfig.VMID = ""
 	err = invalidConfig.validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "vm_id cannot be determined")
-	
+
 	// Test negative max retries
 	invalidConfig = *validConfig
 	invalidConfig.MaxRetries = -1
 	err = invalidConfig.validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max_retries cannot be negative")
-	
+
 	// Test invalid retry interval
 	invalidConfig = *validConfig
 	invalidConfig.RetryInterval = 0
 	err = invalidConfig.validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "retry_interval must be positive")
-	
+
 	// Test invalid log level
 	invalidConfig = *validConfig
 	invalidConfig.LogLevel = "invalid"
 	err = invalidConfig.validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid log_level")
-	
+
 	// Test valid log levels
 	validLogLevels := []string{"debug", "info", "warn", "error", "fatal", "panic"}
 	for _, level := range validLogLevels {
 		validConfig.LogLevel = level
 		err = validConfig.validate()
 		assert.NoError(t, err, "Log level %s should be valid", level)
-		
+
 		validConfig.LogLevel = strings.ToUpper(level)
 		err = validConfig.validate()
 		assert.NoError(t, err, "Uppercase log level should be valid due to case-insensitive validation")
@@ -399,7 +409,7 @@ func clearEnvVars() {
 		"SC_LABELS",
 		"SC_COLLECTOR_PROCESSES",
 	}
-	
+
 	for _, envVar := range envVars {
 		_ = os.Unsetenv(envVar) // Ignore errors in cleanup
 	}

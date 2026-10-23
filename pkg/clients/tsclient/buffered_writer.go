@@ -169,8 +169,3 @@ func (bw *BufferedMetricWriter) Close() error {
 func (bw *BufferedMetricWriter) BufferedBatches() int {
 	return bw.queue.Len()
 }
-
-// BufferedBytes reports the total compressed bytes currently held in the queue.
-func (bw *BufferedMetricWriter) BufferedBytes() int {
-	return bw.queue.Bytes()
-}

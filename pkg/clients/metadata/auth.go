@@ -36,11 +36,6 @@ func NewAuthManager(cfg *config.Config, logger *zap.Logger) *AuthManager {
 	}
 }
 
-// IsRefreshRunning checks if the background refresh loop is running.
-func (am *AuthManager) IsRefreshRunning() bool {
-	return am.refreshTicker != nil
-}
-
 // fetchAndStoreToken fetches a token and CloudAPI URL and stores them internally.
 func (am *AuthManager) fetchAndStoreToken(ctx context.Context, forceFetch bool) error {
 	if forceFetch {

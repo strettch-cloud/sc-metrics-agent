@@ -91,57 +91,39 @@ func NewSystemCollector(cfg config.CollectorConfig, logger *zap.Logger) (*System
 
 	// Add custom system metrics based on configuration
 	if cfg.CPU {
-		if err := sc.addCPUCollector(registry); err == nil {
-			enabled["cpu"] = true
-			logger.Info("Enabled CPU collector")
-		} else {
-			logger.Warn("Failed to enable CPU collector", zap.Error(err))
-		}
+		registry.MustRegister(&cpuCollector{procFS: procFS, logger: logger})
+		enabled["cpu"] = true
+		logger.Info("Enabled CPU collector")
 	}
 
 	if cfg.Memory {
-		if err := sc.addMemoryCollector(registry); err == nil {
-			enabled["memory"] = true
-			logger.Info("Enabled memory collector")
-		} else {
-			logger.Warn("Failed to enable memory collector", zap.Error(err))
-		}
+		registry.MustRegister(&memoryCollector{procFS: procFS, logger: logger})
+		enabled["memory"] = true
+		logger.Info("Enabled memory collector")
 	}
 
 	if cfg.LoadAvg {
-		if err := sc.addLoadAvgCollector(registry); err == nil {
-			enabled["loadavg"] = true
-			logger.Info("Enabled load average collector")
-		} else {
-			logger.Warn("Failed to enable load average collector", zap.Error(err))
-		}
+		registry.MustRegister(&loadAvgCollector{procFS: procFS, logger: logger})
+		enabled["loadavg"] = true
+		logger.Info("Enabled load average collector")
 	}
 
 	if cfg.DiskStats {
-		if err := sc.addDiskStatsCollector(registry); err == nil {
-			enabled["diskstats"] = true
-			logger.Info("Enabled disk stats collector")
-		} else {
-			logger.Warn("Failed to enable disk stats collector", zap.Error(err))
-		}
+		registry.MustRegister(&diskStatsCollector{procFS: procFS, logger: logger})
+		enabled["diskstats"] = true
+		logger.Info("Enabled disk stats collector")
 	}
 
 	if cfg.NetDev {
-		if err := sc.addNetworkCollector(registry); err == nil {
-			enabled["network"] = true
-			logger.Info("Enabled network collector")
-		} else {
-			logger.Warn("Failed to enable network collector", zap.Error(err))
-		}
+		registry.MustRegister(&networkCollector{procFS: procFS, logger: logger})
+		enabled["network"] = true
+		logger.Info("Enabled network collector")
 	}
 
 	if cfg.Filesystem {
-		if err := sc.addFilesystemCollector(registry); err == nil {
-			enabled["filesystem"] = true
-			logger.Info("Enabled filesystem collector")
-		} else {
-			logger.Warn("Failed to enable filesystem collector", zap.Error(err))
-		}
+		registry.MustRegister(&filesystemCollector{procFS: procFS, logger: logger})
+		enabled["filesystem"] = true
+		logger.Info("Enabled filesystem collector")
 	}
 
 	if len(enabled) == 0 {
@@ -153,48 +135,6 @@ func NewSystemCollector(cfg config.CollectorConfig, logger *zap.Logger) (*System
 		zap.Any("collectors", enabled))
 
 	return sc, nil
-}
-
-// addCPUCollector adds CPU metrics using procfs
-func (sc *SystemCollector) addCPUCollector(registry *prometheus.Registry) error {
-	cpuCollector := &cpuCollector{procFS: sc.procFS, logger: sc.logger}
-	registry.MustRegister(cpuCollector)
-	return nil
-}
-
-// addMemoryCollector adds memory metrics using procfs
-func (sc *SystemCollector) addMemoryCollector(registry *prometheus.Registry) error {
-	memoryCollector := &memoryCollector{procFS: sc.procFS, logger: sc.logger}
-	registry.MustRegister(memoryCollector)
-	return nil
-}
-
-// addLoadAvgCollector adds load average metrics using procfs
-func (sc *SystemCollector) addLoadAvgCollector(registry *prometheus.Registry) error {
-	loadAvgCollector := &loadAvgCollector{procFS: sc.procFS, logger: sc.logger}
-	registry.MustRegister(loadAvgCollector)
-	return nil
-}
-
-// addDiskStatsCollector adds disk statistics metrics using procfs
-func (sc *SystemCollector) addDiskStatsCollector(registry *prometheus.Registry) error {
-	diskStatsCollector := &diskStatsCollector{procFS: sc.procFS, logger: sc.logger}
-	registry.MustRegister(diskStatsCollector)
-	return nil
-}
-
-// addNetworkCollector adds network metrics using procfs
-func (sc *SystemCollector) addNetworkCollector(registry *prometheus.Registry) error {
-	networkCollector := &networkCollector{procFS: sc.procFS, logger: sc.logger}
-	registry.MustRegister(networkCollector)
-	return nil
-}
-
-// addFilesystemCollector adds filesystem metrics
-func (sc *SystemCollector) addFilesystemCollector(registry *prometheus.Registry) error {
-	filesystemCollector := &filesystemCollector{procFS: sc.procFS, logger: sc.logger}
-	registry.MustRegister(filesystemCollector)
-	return nil
 }
 
 // Collect gathers metrics from all enabled collectors

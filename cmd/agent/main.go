@@ -29,11 +29,6 @@ var (
 	buildTime = "unknown"
 )
 
-// validateConfigFile validates a settings file without running the agent
-func validateConfigFile(configPath string) error {
-	return config.Validate(configPath)
-}
-
 
 func main() {
 	versionFlag := flag.Bool("v", false, "Print version and exit")
@@ -46,7 +41,7 @@ func main() {
 	}
 
 	if *validateConfigFlag != "" {
-		if err := validateConfigFile(*validateConfigFlag); err != nil {
+		if err := config.Validate(*validateConfigFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "Configuration validation failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -166,14 +161,6 @@ func main() {
 			logger.Info("Agent shutdown complete")
 			return
 
-		case <-ctx.Done():
-			logger.Info("Context cancelled, shutting down")
-			
-			// Clean up resources
-			if err := pipelineProcessor.Close(); err != nil {
-				logger.Error("Error during cleanup", zap.Error(err))
-			}
-			return
 		}
 	}
 }

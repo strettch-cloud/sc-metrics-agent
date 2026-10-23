@@ -311,8 +311,3 @@ func (c *Config) setLogLevel(level, source string) error {
 	return nil
 }
 
-// String returns a string representation of the config (excluding sensitive data)
-func (c *Config) String() string {
-	return fmt.Sprintf("Config{CollectionInterval:%v, VMID:%s, LogLevel:%s, Collectors:%+v}",
-		c.CollectionInterval, c.VMID, c.LogLevel, c.Collectors)
-}

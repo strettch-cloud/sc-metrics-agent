@@ -59,7 +59,8 @@ func agentBinary(t *testing.T) string {
 	t.Helper()
 	agentBinaryOnce.Do(func() {
 		agentBinaryPath = filepath.Join(buildDirectory, "sc-metrics-agent")
-		build := exec.Command("go", "build", "-ldflags", "-X main.version="+testVersion, "-o", agentBinaryPath, "../cmd/agent")
+		// The e2e tag adds the SC_TEST_* overrides, which release builds lack.
+		build := exec.Command("go", "build", "-tags", "e2e", "-ldflags", "-X main.version="+testVersion, "-o", agentBinaryPath, "../cmd/agent")
 		if output, err := build.CombinedOutput(); err != nil {
 			agentBinaryError = fmt.Errorf("go build failed: %w\n%s", err, output)
 		}
@@ -123,23 +124,26 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 	if options.bufferDir == "" {
 		options.bufferDir = filepath.Join(workDirectory, "buffer")
 	}
-	// One file holds both agent.yaml's metadata address and the agent's own
-	// settings, because the agent reads both from SC_AGENT_CONFIG.
-	configPath := filepath.Join(workDirectory, "config.yaml")
-	config := fmt.Sprintf("metadata_service:\n  base_url: %q\nbuffer_dir: %q\n", cloud.metadata.URL(), options.bufferDir)
-	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
+	agentYAMLPath := filepath.Join(workDirectory, "agent.yaml")
+	agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", cloud.metadata.URL())
+	require.NoError(t, os.WriteFile(agentYAMLPath, []byte(agentYAML), 0o600))
+	// dmidecode stands in for the VM's firmware: it prints the VM ID, or
+	// nothing when the test has none.
+	dmidecodePath := filepath.Join(workDirectory, "dmidecode")
+	require.NoError(t, os.WriteFile(dmidecodePath, []byte("#!/bin/sh\nprintf '%s\\n' '"+options.vmID+"'\n"), 0o700))
 
 	environment := []string{
 		"PATH=" + os.Getenv("PATH"),
-		"SC_AGENT_CONFIG=" + configPath,
-		"SC_COLLECTION_INTERVAL=" + collectionInterval.String(),
-		"SC_HTTP_TIMEOUT=2s",
+		"SC_TEST_AGENT_YAML=" + agentYAMLPath,
+		// Missing, so the machine's own config.yaml can't change the result.
+		"SC_TEST_CONFIG_YAML=" + filepath.Join(workDirectory, "config.yaml"),
+		"SC_TEST_DMIDECODE=" + dmidecodePath,
+		"SC_TEST_BUFFER_DIR=" + options.bufferDir,
+		"SC_TEST_COLLECTION_INTERVAL=" + collectionInterval.String(),
+		"SC_TEST_HTTP_TIMEOUT=2s",
 		// max_retries 0 means "retry forever" (SC-586), so use 1.
-		"SC_MAX_RETRIES=1",
-		"SC_RETRY_INTERVAL=100ms",
-	}
-	if options.vmID != "" {
-		environment = append(environment, "SC_VM_ID="+options.vmID)
+		"SC_TEST_MAX_RETRIES=1",
+		"SC_TEST_RETRY_INTERVAL=100ms",
 	}
 
 	logPath := filepath.Join(workDirectory, "agent.log")

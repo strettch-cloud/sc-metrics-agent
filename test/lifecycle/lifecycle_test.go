@@ -188,14 +188,11 @@ func (box *container) mustExec(t *testing.T, command ...string) string {
 	return output
 }
 
-// configureAgent sets what a real VM provides another way: the VM ID, which
-// dmidecode reads on a VM, and a short collection interval so the test doesn't
-// wait 30 s. It uses a systemd drop-in rather than /etc/sc-metrics-agent, so
-// the package still has to create that directory itself.
+// configureAgent gives the container what a VM's firmware provides: dmidecode
+// prints the VM ID. The real one would read the host's firmware, or nothing.
 func (box *container) configureAgent(t *testing.T) {
 	t.Helper()
-	box.mustExec(t, "mkdir", "-p", "/etc/systemd/system/"+agentService+".d")
-	box.mustExec(t, "sh", "-c", "printf '[Service]\\nEnvironment=SC_VM_ID="+testVMID+"\\nEnvironment=SC_COLLECTION_INTERVAL=2s\\n' > /etc/systemd/system/"+agentService+".d/lifecycle-test.conf")
+	box.mustExec(t, "sh", "-c", "printf '#!/bin/sh\\necho "+testVMID+"\\n' > /usr/sbin/dmidecode && chmod 755 /usr/sbin/dmidecode")
 }
 
 // install installs a package the way an operator does, with post-install
@@ -257,6 +254,13 @@ func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 		assert.Equal(t, strings.TrimSpace(cloud.agentYAML), box.mustExec(t, "cat", "/etc/strettchcloud/config/agent.yaml"))
 	})
 
+	// The updater validates this file after every update. It holds no metadata
+	// address, and validation used to panic looking for one in it.
+	t.Run("validates the config the installer writes", func(t *testing.T) {
+		output, exitCode := box.exec(t, nil, "sc-metrics-agent", "--validate-config", "/etc/sc-metrics-agent/config.yaml")
+		assert.Equal(t, 0, exitCode, output)
+	})
+
 	t.Run("starts the agent and its update timer", func(t *testing.T) {
 		box.requireRunningAndEnabled(t, agentService)
 		box.requireRunningAndEnabled(t, updaterTimer)
@@ -280,6 +284,23 @@ func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 			pid := box.mainPID(t)
 			return active == "active" && pid != "0" && pid != killedPID
 		}, restartWait, pollEvery)
+	})
+
+	// config.yaml may only set the log level. A file that sets more must not
+	// stop the agent: it is ignored, and --validate-config reports it.
+	t.Run("ignores a config.yaml that sets more than the log level", func(t *testing.T) {
+		box.mustExec(t, "sh", "-c", "printf 'log_level: debug\\ncollection_interval: 1ms\\n' > /etc/sc-metrics-agent/config.yaml")
+		output, exitCode := box.exec(t, nil, "sc-metrics-agent", "--validate-config", "/etc/sc-metrics-agent/config.yaml")
+		assert.Equal(t, 1, exitCode, output)
+		assert.Contains(t, output, "may only set log_level")
+
+		metricsBefore := cloud.metricsFromTestVM()
+		box.mustExec(t, "systemctl", "restart", agentService)
+		box.requireRunningAndEnabled(t, agentService)
+		require.Eventually(t, func() bool { return cloud.metricsFromTestVM() > metricsBefore }, 60*time.Second, pollEvery,
+			"the agent stopped sending metrics")
+		journal := box.mustExec(t, "journalctl", "--no-pager", "--unit", agentService)
+		assert.Contains(t, journal, "Ignoring /etc/sc-metrics-agent/config.yaml may only set log_level")
 	})
 
 	t.Run("apt remove stops it and keeps the configuration", func(t *testing.T) {

@@ -1,19 +1,17 @@
 package test
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -176,8 +174,10 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 	require.NoError(t, err)
 	command := exec.Command(agentBinary(t))
 	command.Env = withAgentCoverage(environment)
-	command.Stdout = logFile
-	command.Stderr = logFile
+	// Through a pipe, not the file itself: under systemd the agent writes to a
+	// socket, and a file hides errors that only a pipe or a socket causes.
+	command.Stdout = io.MultiWriter(logFile)
+	command.Stderr = io.MultiWriter(logFile)
 	require.NoError(t, command.Start())
 
 	agent := &agentProcess{command: command, logPath: logPath, exited: make(chan struct{})}
@@ -333,13 +333,11 @@ func TestAgentStopsCleanlyOnSIGTERM(t *testing.T) {
 
 	assert.Equal(t, 0, agent.stop(t))
 	assert.Contains(t, agent.log(t), "Agent shutdown complete")
+	assert.NotContains(t, agent.log(t), "Failed to sync logger")
 }
 
 func TestAgentRefusesToStartWithoutAVMID(t *testing.T) {
 	t.Parallel()
-	if dmidecodeFindsAVMID() {
-		t.Skip("dmidecode reports this machine's UUID, so a missing VM ID can't be set up here")
-	}
 	cloud := newFakeCloud(t)
 	agent := startAgent(t, cloud, agentOptions{})
 
@@ -347,23 +345,6 @@ func TestAgentRefusesToStartWithoutAVMID(t *testing.T) {
 	assert.NotEqual(t, 0, agent.waitForExit(t, 10*time.Second))
 	assert.Contains(t, agent.log(t), "vm_id cannot be determined")
 	assert.Empty(t, cloud.ingest.GetRequests())
-}
-
-// dmidecodeFindsAVMID tries the same dmidecode paths the agent tries, with the
-// same 5 s limit, so a stuck dmidecode can't hang the test.
-func dmidecodeFindsAVMID() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for _, dmidecode := range []string{"/usr/sbin/dmidecode", "/sbin/dmidecode", "dmidecode"} {
-		output, err := exec.CommandContext(ctx, dmidecode, "-s", "system-uuid").Output()
-		if err != nil {
-			continue
-		}
-		if _, err := uuid.Parse(strings.TrimSpace(string(output))); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func TestAgentPrintsTheVersionItWasBuiltWith(t *testing.T) {

@@ -48,13 +48,9 @@ func main() {
 		fmt.Println("Configuration is valid")
 		os.Exit(0)
 	}
-	// Initialize logger
+	// The logger writes each line straight to stdout, so it never needs a
+	// Sync, and Sync on a socket, as stdout is under systemd, only fails.
 	logger := initLogger("info")
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
-		}
-	}()
 
 	// Load configuration
 	cfg, err := config.Load()
@@ -73,11 +69,6 @@ func main() {
 	// Update log level from config
 	if cfg.LogLevel != "info" {
 		logger = initLogger(cfg.LogLevel)
-		defer func() {
-			if err := logger.Sync(); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
-			}
-		}()
 	}
 
 	logger.Info("Starting SC metrics agent",

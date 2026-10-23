@@ -46,21 +46,6 @@ func TestDiskQueue_PushPop_FIFO(t *testing.T) {
 	assert.Equal(t, 0, q.Bytes())
 }
 
-func TestDiskQueue_Peek_DoesNotRemove(t *testing.T) {
-	q, _ := newDisk(t, 100)
-	require.True(t, q.Push([]byte("first")))
-	require.True(t, q.Push([]byte("second")))
-
-	blob, ok := q.Peek()
-	require.True(t, ok)
-	assert.Equal(t, []byte("first"), blob)
-	assert.Equal(t, 2, q.Len())
-
-	blob, ok = q.Peek()
-	require.True(t, ok)
-	assert.Equal(t, []byte("first"), blob)
-}
-
 func TestDiskQueue_ReadN(t *testing.T) {
 	q, _ := newDisk(t, 100)
 	for _, s := range []string{"a", "b", "c", "d"} {

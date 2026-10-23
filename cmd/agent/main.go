@@ -29,18 +29,6 @@ var (
 	buildTime = "unknown"
 )
 
-// validateConfigFile validates a configuration file without running the agent
-func validateConfigFile(configPath string) error {
-	// Set the config path environment variable so config.Load() uses it
-	if err := os.Setenv("SC_AGENT_CONFIG", configPath); err != nil {
-		return fmt.Errorf("failed to set config path: %w", err)
-	}
-	
-	// Load and validate the configuration
-	_, err := config.Load()
-	return err
-}
-
 
 func main() {
 	versionFlag := flag.Bool("v", false, "Print version and exit")
@@ -53,20 +41,16 @@ func main() {
 	}
 
 	if *validateConfigFlag != "" {
-		if err := validateConfigFile(*validateConfigFlag); err != nil {
+		if err := config.Validate(*validateConfigFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "Configuration validation failed: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("Configuration is valid")
 		os.Exit(0)
 	}
-	// Initialize logger
+	// The logger writes each line straight to stdout, so it never needs a
+	// Sync, and Sync on a socket, as stdout is under systemd, only fails.
 	logger := initLogger("info")
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
-		}
-	}()
 
 	// Load configuration
 	cfg, err := config.Load()
@@ -74,7 +58,7 @@ func main() {
 		if strings.Contains(err.Error(), "vm_id cannot be determined") {
 			logger.Fatal("Failed to load configuration - VM ID detection failed",
 				zap.Error(err),
-				zap.String("help", "Ensure dmidecode is installed and accessible, or set vm_id manually in config.yaml or SC_VM_ID environment variable"),
+				zap.String("help", "Ensure dmidecode is installed and accessible, or set SC_VM_ID in /etc/sc-metrics-agent/environment"),
 				zap.String("dmidecode_check", "Run 'dmidecode -s system-uuid' to test VM ID detection"),
 			)
 		} else {
@@ -85,11 +69,6 @@ func main() {
 	// Update log level from config
 	if cfg.LogLevel != "info" {
 		logger = initLogger(cfg.LogLevel)
-		defer func() {
-			if err := logger.Sync(); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
-			}
-		}()
 	}
 
 	logger.Info("Starting SC metrics agent",
@@ -99,13 +78,11 @@ func main() {
 		zap.Any("collectors", cfg.Collectors),
 	)
 
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Set up signal handling
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// SIGINT or SIGTERM cancels ctx at once, which ends a send waiting to
+	// retry. Waiting out the retries could take longer than systemd's 90
+	// second stop timeout, after which it kills the agent.
+	ctx, stopListeningForSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopListeningForSignals()
 
 	// Initialize components
 	systemCollector, err := collector.NewSystemCollector(cfg.Collectors, logger)
@@ -125,7 +102,7 @@ func main() {
 		RetryDelay: cfg.RetryInterval,
 	}
 	httpClient := tsclient.NewClient(clientConfig, logger)
-	// Auxiliary writer handles heartbeats and diagnostics (not buffered);
+	// Auxiliary writer handles heartbeats (not buffered);
 	// buffered writer queues metrics so they survive auth or ingest outages.
 	auxWriter := tsclient.NewAuxiliaryWriter(httpClient, logger)
 	metricQueue, err := buffer.NewDiskQueue(cfg.BufferDir, buffer.DefaultMaxBytes, logger)
@@ -153,36 +130,23 @@ func main() {
 
 	logger.Info("Agent started successfully")
 
-	// Simple main execution loop
-	for {
+	// The loop condition checks ctx too: when a tick and the signal are both
+	// ready, select picks one at random, and could start another round.
+	for ctx.Err() == nil {
 		select {
 		case <-ticker.C:
 			if err := pipelineProcessor.Process(ctx); err != nil {
 				logger.Error("Failed to process metrics pipeline", zap.Error(err))
 			}
-
-		case sig := <-sigChan:
-			logger.Info("Received shutdown signal, cleaning up", zap.String("signal", sig.String()))
-			cancel()
-			
-			// Clean up resources
-			if err := pipelineProcessor.Close(); err != nil {
-				logger.Error("Error during cleanup", zap.Error(err))
-			}
-			
-			logger.Info("Agent shutdown complete")
-			return
-
 		case <-ctx.Done():
-			logger.Info("Context cancelled, shutting down")
-			
-			// Clean up resources
-			if err := pipelineProcessor.Close(); err != nil {
-				logger.Error("Error during cleanup", zap.Error(err))
-			}
-			return
 		}
 	}
+
+	logger.Info("Received shutdown signal, cleaning up")
+	if err := pipelineProcessor.Close(); err != nil {
+		logger.Error("Error during cleanup", zap.Error(err))
+	}
+	logger.Info("Agent shutdown complete")
 }
 
 func initLogger(logLevel string) *zap.Logger {

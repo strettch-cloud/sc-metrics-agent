@@ -30,11 +30,12 @@ print_status() {
 
 echo "Configuring SC-Metrics-Agent..."
 
-# Refresh every APT keyring this host trusts for our repository: the path
-# install.sh writes, plus whatever signed-by points at in any APT source for
-# repo.cloud.strettch.com/metrics (older installers used other file names). Done
-# first so a later failure in this script cannot leave the host unable to verify
-# the next repository signing key.
+# Refresh every APT keyring this host trusts for our repository: the path the
+# installer at repo.cloud.strettch.com/metrics/install.sh writes, plus whatever
+# signed-by points at in any APT source for repo.cloud.strettch.com/metrics
+# (older installers used other file names). Done first so a later failure in
+# this script cannot leave the host unable to verify the next repository
+# signing key.
 readonly PACKAGED_KEYRING="/usr/lib/sc-metrics-agent/apt-keyring.gpg"
 readonly REPO_URL_RE='repo\.cloud\.strettch\.com/metrics'
 
@@ -171,7 +172,7 @@ fi
 # Verify services are running (only if we started them)
 if [ "${SC_AGENT_AUTO_UPDATER:-0}" != "1" ]; then
     # Allow some time for service to fully activate
-    for i in {1..5}; do
+    for _ in {1..5}; do
         MAIN_STATUS=$(systemctl is-active "${SERVICE_NAME}" 2>/dev/null || echo "inactive")
         if [ "$MAIN_STATUS" = "active" ] || [ "$MAIN_STATUS" = "activating" ]; then
             break

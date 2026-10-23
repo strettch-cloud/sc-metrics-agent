@@ -14,9 +14,8 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	heartbeatInterval = 10 * time.Minute
-)
+// A variable only so tests can shorten it.
+var heartbeatInterval = 10 * time.Minute
 
 // Processor implements the Collect -> Decorate -> Aggregate -> Write pipeline
 type Processor struct {
@@ -30,19 +29,6 @@ type Processor struct {
 	ctx             context.Context    // Lifecycle context
 	cancel          context.CancelFunc // Lifecycle cancel
 	logger          *zap.Logger
-	lastProcessTime time.Time
-	lastMetricCount int
-	lastError       string
-}
-
-// ProcessingStats holds statistics about pipeline processing
-type ProcessingStats struct {
-	CollectedFamilies int           `json:"collected_families"`
-	DecoratedFamilies int           `json:"decorated_families"`
-	AggregatedMetrics int           `json:"aggregated_metrics"`
-	WrittenMetrics    int           `json:"written_metrics"`
-	ProcessingTime    time.Duration `json:"processing_time"`
-	Timestamp         int64         `json:"timestamp"`
 }
 
 // NewProcessor creates a new pipeline processor
@@ -97,7 +83,6 @@ func (p *Processor) Process(ctx context.Context) error {
 		}
 		p.logger.Warn("Auth token unavailable; batch will be buffered for later delivery",
 			zap.Error(authErr))
-		p.lastError = fmt.Sprintf("auth unavailable, buffering: %v", authErr)
 	}
 
 	startTime := time.Now()
@@ -114,7 +99,6 @@ func (p *Processor) Process(ctx context.Context) error {
 	p.logger.Debug("Step 1: Collecting metrics")
 	metricFamilies, err := p.collector.Collect(ctx)
 	if err != nil {
-		p.lastError = fmt.Sprintf("collection failed: %v", err)
 		return fmt.Errorf("failed to collect metrics: %w", err)
 	}
 
@@ -136,7 +120,6 @@ func (p *Processor) Process(ctx context.Context) error {
 	p.logger.Debug("Step 2: Decorating metrics")
 	decoratedFamilies, err := p.decorator.Decorate(metricFamilies)
 	if err != nil {
-		p.lastError = fmt.Sprintf("decoration failed: %v", err)
 		return fmt.Errorf("failed to decorate metrics: %w", err)
 	}
 
@@ -153,7 +136,6 @@ func (p *Processor) Process(ctx context.Context) error {
 	p.logger.Debug("Step 3: Aggregating metrics")
 	aggregatedMetrics, err := p.aggregator.Aggregate(decoratedFamilies)
 	if err != nil {
-		p.lastError = fmt.Sprintf("aggregation failed: %v", err)
 		return fmt.Errorf("failed to aggregate metrics: %w", err)
 	}
 
@@ -177,17 +159,10 @@ func (p *Processor) Process(ctx context.Context) error {
 	// Step 4: Write metrics
 	p.logger.Debug("Step 4: Writing metrics")
 	if err := p.writer.WriteMetrics(ctx, aggregatedMetrics, authToken); err != nil {
-		p.lastError = fmt.Sprintf("write failed: %v", err)
 		return fmt.Errorf("failed to write metrics: %w", err)
 	}
 
-	// Update processing statistics
 	processingTime := time.Since(startTime)
-	p.lastProcessTime = startTime
-	p.lastMetricCount = len(aggregatedMetrics)
-	if authErr == nil {
-		p.lastError = ""
-	}
 
 	p.logger.Info("Pipeline processing completed successfully",
 		zap.Int("collected_families", len(metricFamilies)),
@@ -203,7 +178,6 @@ func (p *Processor) getAuthTokenWithRetry(ctx context.Context) (string, error) {
 	const (
 		maxRetries    = 3
 		initialDelay  = 500 * time.Millisecond
-		maxDelay      = 5 * time.Second
 		backoffFactor = 2
 	)
 
@@ -250,67 +224,10 @@ func (p *Processor) getAuthTokenWithRetry(ctx context.Context) (string, error) {
 			}
 
 			delay *= backoffFactor
-			if delay > maxDelay {
-				delay = maxDelay
-			}
 		}
 	}
 
 	return "", fmt.Errorf("auth token is empty after %d retries - refresh may have failed", maxRetries)
-}
-
-// WriteDiagnostics sends diagnostic information to the ingestor
-// This is called when the main pipeline fails to provide agent health status
-func (p *Processor) WriteDiagnostics(ctx context.Context) error {
-	p.logger.Debug("Writing diagnostics to ingestor")
-	
-	// Get the current auth token
-	authToken := p.authMgr.GetCurrentToken()
-
-	// Determine agent status
-	status := "healthy"
-	if p.lastError != "" {
-		status = "error"
-	}
-
-	// Get collector status if available
-	collectorStatus := make(map[string]bool)
-	if systemCollector, ok := p.collector.(*collector.SystemCollector); ok {
-		collectorStatus = systemCollector.GetEnabledCollectors()
-	}
-
-	// Send diagnostics
-	if err := p.writer.WriteDiagnostics(ctx, p.cfg.VMID, status, p.lastError, collectorStatus, authToken); err != nil {
-		p.logger.Error("Failed to write diagnostics", zap.Error(err))
-		return fmt.Errorf("failed to write diagnostics: %w", err)
-	}
-
-	p.logger.Info("Diagnostics sent successfully", zap.String("status", status))
-	return nil
-}
-
-// GetProcessingStats returns current processing statistics
-func (p *Processor) GetProcessingStats() ProcessingStats {
-	return ProcessingStats{
-		WrittenMetrics: p.lastMetricCount,
-		ProcessingTime: time.Since(p.lastProcessTime),
-		Timestamp:      p.lastProcessTime.UnixMilli(),
-	}
-}
-
-// GetLastError returns the last error encountered during processing
-func (p *Processor) GetLastError() string {
-	return p.lastError
-}
-
-// GetLastProcessTime returns the timestamp of the last successful processing
-func (p *Processor) GetLastProcessTime() time.Time {
-	return p.lastProcessTime
-}
-
-// GetLastMetricCount returns the number of metrics processed in the last run
-func (p *Processor) GetLastMetricCount() int {
-	return p.lastMetricCount
 }
 
 // Close performs cleanup for the processor
@@ -341,35 +258,6 @@ func (p *Processor) Close() error {
 	}
 	
 	p.logger.Debug("Pipeline processor closed")
-	return nil
-}
-
-// ValidateConfiguration checks if the processor is properly configured
-func (p *Processor) ValidateConfiguration() error {
-	if p.collector == nil {
-		return fmt.Errorf("collector is nil")
-	}
-	
-	if p.decorator == nil {
-		return fmt.Errorf("decorator is nil")
-	}
-	
-	if p.aggregator == nil {
-		return fmt.Errorf("aggregator is nil")
-	}
-	
-	if p.writer == nil {
-		return fmt.Errorf("writer is nil")
-	}
-	
-	if p.logger == nil {
-		return fmt.Errorf("logger is nil")
-	}
-
-	if p.authMgr == nil {
-		return fmt.Errorf("auth manager is nil")
-	}
-
 	return nil
 }
 

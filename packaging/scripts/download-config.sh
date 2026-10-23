@@ -16,8 +16,9 @@ LOG_PREFIX="[SC-Metrics-Agent-Config]"
 log() {
     local level=$1
     shift
-    local message="$@"
-    local timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+    local message="$*"
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
     case $level in
         ERROR|WARN)
@@ -61,7 +62,7 @@ fi
 
 # === Create secure temporary file ===
 TMP_FILE=$(mktemp /tmp/strettch-agent-config.XXXXXX)
-trap "rm -f ${TMP_FILE}" EXIT INT TERM
+trap 'rm -f "${TMP_FILE}"' EXIT INT TERM
 
 # === Download config to temporary file ===
 log "INFO" "Downloading agent configuration from ${REPO_URL}/${ENVIRONMENT}/agent.yaml"

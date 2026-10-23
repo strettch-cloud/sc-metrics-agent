@@ -1,74 +1,9 @@
 # SC Metrics Agent Configuration
-# Point SC_AGENT_CONFIG at a copy of this file. It replaces
-# /etc/strettchcloud/config/agent.yaml, so it must keep metadata_service.base_url.
-metadata_service:
-  base_url: "http://<metadata-service-host>:8000"
-
-# Collection settings
-collection_interval: 30s
-http_timeout: 30s
-
-
-# Metadata service endpoint for authentication
-metadata_service_endpoint: "http://169.254.169.254/metadata/v1/auth-token"
-
-# Agent identification - VM ID will be automatically detected if not specified
-vm_id: ""
-
-# Auto-update settings
-auto_update:
-  enabled: true
-  check_interval: "1h"
-  channel: "stable"  # Options: "stable", "beta"
-
-# Additional labels to attach to all metrics
-labels:
-  environment: "production"
-  region: "us-east-1"
-  team: "platform"
-  service: "web-frontend"
-
-# Collectors configuration - specify which metrics to collect
-collectors:
-  # Process and system metrics
-  processes: true
-  cpu: true
-  cpu_freq: true
-  loadavg: true
-  
-  # Memory metrics  
-  memory: true
-  vmstat: true
-  
-  # Storage metrics
-  disk: true
-  diskstats: true
-  filesystem: true
-  
-  # Network metrics
-  network: true
-  netdev: true
-  netstat: true
-  sockstat: true
-  
-  # System information
-  uname: true
-  time: true
-  uptime: true
-  entropy: true
-  interrupts: true
-  
-  # Advanced metrics
-  thermal: true
-  pressure: true
-  schedstat: true
-
-# Logging configuration
-log_level: "info"
-
-# Retry settings
-max_retries: 3
-retry_interval: 5s
-
-# On-disk metric buffer location. 
-buffer_dir: /var/lib/sc-metrics-agent/buffer
+# Copy this to /etc/sc-metrics-agent/config.yaml and restart the service.
+#
+# log_level is the only setting this file accepts: debug, info, warn or error.
+# If the file holds anything else, or a level the agent doesn't know, the agent
+# ignores the whole file, logs why, and runs on its defaults.
+# `sc-metrics-agent --validate-config /etc/sc-metrics-agent/config.yaml`
+# reports the problem.
+log_level: info

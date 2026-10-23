@@ -7,7 +7,7 @@ as GitHub releases.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `pr.yml` | Pull request to `main` | polin-guard scan, Trivy, govulncheck, tests, golangci-lint, build |
+| `pr.yml` | Any pull request, stacked ones included | polin-guard scan, Trivy, govulncheck, tests (coverage report in the run summary), golangci-lint, shellcheck and systemd unit checks, build; then the `.deb` installed, upgraded and removed under systemd on Ubuntu 22.04 and 24.04 and Debian 12 and 13 |
 | `beta.yml` | Merge to `main` | Builds `X.Y.Z-beta.N`, creates a GitHub pre-release with the `.deb` packages |
 | `release.yml` | Manual dispatch from `main` | Validates `X.Y.Z`, creates a GitHub release with the `.deb` packages |
 | `_build.yml` | Called by the two above | Scans, builds and packages `amd64` and `arm64` |

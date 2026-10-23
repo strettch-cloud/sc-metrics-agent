@@ -2,13 +2,15 @@
 # `mise run <task>` (`mise tasks` lists them). CI runs the same tasks.
 
 [tools]
-go = "1.26.9"
+go = "1.26.10"
 # Built from source with the pinned Go above (a prebuilt release binary can be
 # compiled with an older Go than the module targets and then fail to load the config).
 "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "v2.12.2"
 # Security scanners used by scripts/security-scan.sh.
 "aqua:aquasecurity/trivy" = "0.70.0"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+# Lints the shell scripts the package ships and CI runs (lint-packaging).
+"aqua:koalaman/shellcheck" = "0.11.0"
 
 [env]
 BINARY_NAME = "sc-metrics-agent"
@@ -38,7 +40,7 @@ description = "Build amd64 and arm64 .deb packages: mise run package <version> [
 run = '.github/scripts/build-all-packages.sh {{arg(name="version")}} {{arg(name="channel", default="stable")}}'
 
 [tasks.clean]
-run = "rm -rf $BUILD_DIR coverage.out coverage.html *.deb packages.sha256"
+run = "rm -rf $BUILD_DIR coverage.out coverage-raw.out coverage.html *.deb packages.sha256"
 
 [tasks.run]
 description = "Build and run the agent"
@@ -54,14 +56,23 @@ run = "SC_LOG_LEVEL=debug exec $BUILD_DIR/$BINARY_NAME"
 [tasks.fmt]
 run = "golangci-lint fmt"
 
+# The lifecycle tag includes test/lifecycle, which only builds with it; the
+# e2e tag includes pkg/config/overrides_e2e.go, the test-only overrides.
 [tasks.lint]
 description = "Check only (CI-safe)"
 depends = ["deps"]
-run = "golangci-lint run"
+run = "golangci-lint run --build-tags=lifecycle,e2e"
 
 [tasks.lint-fix]
 description = "Lint and auto-fix"
-run = "golangci-lint run --fix"
+run = "golangci-lint run --build-tags=lifecycle,e2e --fix"
+
+[tasks.lint-packaging]
+description = "shellcheck every script, and check the systemd units (CI-safe)"
+run = """
+shellcheck packaging/scripts/*.sh .github/scripts/*.sh
+.github/scripts/verify-units.sh packaging/systemd
+"""
 
 [tasks.vet]
 run = "go vet ./..."
@@ -73,8 +84,43 @@ run = "./scripts/security-scan.sh"
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 [tasks.test]
+description = "Tests with the race detector; coverage in coverage.out, total printed last"
 depends = ["deps"]
-run = "go test -race -coverprofile=coverage.out ./..."
+# The run fails when total coverage drops below this. Raise it with every pull
+# request that adds tests, until it reaches the 98 target.
+env = { COVERAGE_MINIMUM = "98.0" }
+run = '''
+set -e
+patterns=$(mktemp)
+agent_coverage=$(mktemp)
+# The tests in test/ run the agent as its own process, and Go counts only code
+# run inside the test process. So those agents are built with coverage, write
+# it to AGENT_COVERAGE_DIR, and it is added to coverage-raw.out below.
+AGENT_COVERAGE_DIR=$(mktemp -d)
+export AGENT_COVERAGE_DIR
+trap 'rm -rf "$patterns" "$agent_coverage" "$AGENT_COVERAGE_DIR"' EXIT
+# -coverpkg=./... credits a test with every package it runs, not only its own,
+# so integration tests count toward the code they exercise.
+go test -race -coverpkg=./... -coverprofile=coverage-raw.out ./...
+go tool covdata textfmt -i="$AGENT_COVERAGE_DIR" -o="$agent_coverage"
+# Same files and blocks as the tests' own lines; go tool cover adds up a block
+# listed more than once.
+tail -n +2 "$agent_coverage" >> coverage-raw.out
+# coverage.out is coverage-raw.out minus the files .coverageignore lists.
+# Blank and comment lines are skipped: a blank pattern would match every line.
+grep -vE '^[[:space:]]*(#|$)' .coverageignore > "$patterns" || [ $? -eq 1 ]
+head -n 1 coverage-raw.out > coverage.out
+# grep exits 1 when no line is left, which is fine, and 2 on an invalid pattern.
+tail -n +2 coverage-raw.out | grep -vE -f "$patterns" >> coverage.out || [ $? -eq 1 ]
+# Assigned first: in a pipeline, set -e would only see tail's exit status.
+coverage_report=$(go tool cover -func=coverage.out)
+printf '%s\n' "$coverage_report" | tail -n 1
+total=$(printf '%s\n' "$coverage_report" | awk '$1 == "total:" { sub(/%$/, "", $NF); print $NF }')
+if awk -v total="$total" -v minimum="$COVERAGE_MINIMUM" 'BEGIN { exit !(total < minimum) }'; then
+  echo "Coverage ${total}% is below the minimum of ${COVERAGE_MINIMUM}% set in mise.toml." >&2
+  exit 1
+fi
+'''
 
 [tasks.test-coverage]
 description = "Tests plus an HTML coverage report in coverage.html"

@@ -134,21 +134,6 @@ func (q *DiskQueue) Push(blob []byte) bool {
 	return true
 }
 
-// Peek returns the oldest blob without removing it.
-func (q *DiskQueue) Peek() ([]byte, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if len(q.entries) == 0 {
-		return nil, false
-	}
-	data, err := q.readAt(0)
-	if err != nil {
-		q.logger.Error("Failed to read head batch", zap.Error(err))
-		return nil, false
-	}
-	return data, true
-}
-
 // ReadN returns up to n oldest blobs. Successful reads stay in the queue;
 // unreadable entries are dropped inline so one bad file can't block the rest.
 func (q *DiskQueue) ReadN(n int) [][]byte {

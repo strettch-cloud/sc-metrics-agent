@@ -1,5 +1,6 @@
 build
 coverage.*
+coverage-raw.out
 # macOS
 .DS_Store
 

@@ -34,6 +34,13 @@ var (
 	newBlockDevices = func() (blockdevice.FS, error) { return blockdevice.NewFS("/proc", "/sys") }
 )
 
+// validLabelValue replaces bytes that aren't valid UTF-8. Linux allows them
+// in paths and interface names, but MustNewConstMetric panics on them inside
+// Gather, which crashes the whole agent on every collection.
+func validLabelValue(name string) string {
+	return strings.ToValidUTF8(name, "\uFFFD")
+}
+
 // getInterfaceIPAddress retrieves the first non-loopback IPv4 address of an interface
 func getInterfaceIPAddress(interfaceName string) (string, error) {
 	iface, err := net.InterfaceByName(interfaceName)
@@ -155,11 +162,15 @@ func (sc *SystemCollector) Collect(ctx context.Context) ([]*dto.MetricFamily, er
 	sc.logger.Debug("Starting metric collection")
 	start := time.Now()
 
-	// Gather metrics from the registry
+	// Gather drops only the series it rejects and returns the rest with the
+	// error, so one bad series doesn't cost the CPU and memory metrics too.
 	metricFamilies, err := sc.registry.Gather()
 	if err != nil {
-		sc.logger.Error("Failed to gather metrics from registry", zap.Error(err))
-		return nil, fmt.Errorf("failed to gather metrics: %w", err)
+		if len(metricFamilies) == 0 {
+			sc.logger.Error("Failed to gather metrics from registry", zap.Error(err))
+			return nil, fmt.Errorf("failed to gather metrics: %w", err)
+		}
+		sc.logger.Error("Some metrics could not be gathered, sending the rest", zap.Error(err))
 	}
 
 	sc.lastCollect = time.Now()
@@ -425,10 +436,11 @@ func (c *networkCollector) Collect(ch chan<- prometheus.Metric) {
 			zap.Uint64("rx_bytes", dev.RxBytes),
 			zap.Uint64("tx_bytes", dev.TxBytes))
 
-		ch <- prometheus.MustNewConstMetric(c.descs["receive_bytes"], prometheus.CounterValue, float64(dev.RxBytes), dev.Name, ipAddress)
-		ch <- prometheus.MustNewConstMetric(c.descs["transmit_bytes"], prometheus.CounterValue, float64(dev.TxBytes), dev.Name, ipAddress)
-		ch <- prometheus.MustNewConstMetric(c.descs["receive_packets"], prometheus.CounterValue, float64(dev.RxPackets), dev.Name, ipAddress)
-		ch <- prometheus.MustNewConstMetric(c.descs["transmit_packets"], prometheus.CounterValue, float64(dev.TxPackets), dev.Name, ipAddress)
+		device := validLabelValue(dev.Name)
+		ch <- prometheus.MustNewConstMetric(c.descs["receive_bytes"], prometheus.CounterValue, float64(dev.RxBytes), device, ipAddress)
+		ch <- prometheus.MustNewConstMetric(c.descs["transmit_bytes"], prometheus.CounterValue, float64(dev.TxBytes), device, ipAddress)
+		ch <- prometheus.MustNewConstMetric(c.descs["receive_packets"], prometheus.CounterValue, float64(dev.RxPackets), device, ipAddress)
+		ch <- prometheus.MustNewConstMetric(c.descs["transmit_packets"], prometheus.CounterValue, float64(dev.TxPackets), device, ipAddress)
 	}
 }
 
@@ -457,7 +469,32 @@ func (c *filesystemCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
+	// A path can be mounted more than once, for example a bind mount on top of
+	// itself or a second disk over the first. statfs only sees the top mount,
+	// so each path is reported once, for that mount: reporting it twice with
+	// the same labels would make the whole Gather fail. mountinfo's order can't
+	// tell which mount is on top (mount --move keeps a mount's old place), but
+	// a mount stacked on a path is a child of the one it hides, so a mount that
+	// is the parent of another mount on the same path is hidden. The root of a
+	// mount namespace lists itself as its own parent, which hides nothing.
+	type mountOnPath struct {
+		mountPoint string
+		mountID    int
+	}
+	hiddenMounts := make(map[mountOnPath]bool)
 	for _, mount := range mounts {
+		if mount.ParentID != mount.MountID {
+			hiddenMounts[mountOnPath{mount.MountPoint, mount.ParentID}] = true
+		}
+	}
+
+	reportedMountPoints := make(map[string]bool)
+	for _, mount := range mounts {
+		if hiddenMounts[mountOnPath{mount.MountPoint, mount.MountID}] || reportedMountPoints[mount.MountPoint] {
+			continue
+		}
+		reportedMountPoints[mount.MountPoint] = true
+
 		if ignoredFSTypes[mount.FSType] {
 			c.logger.Debug("Skipping ignored filesystem type",
 				zap.String("fstype", mount.FSType),
@@ -482,8 +519,10 @@ func (c *filesystemCollector) Collect(ch chan<- prometheus.Metric) {
 		freeSize := float64(stat.Bfree * uint64(stat.Bsize))
 		availSize := float64(stat.Bavail * uint64(stat.Bsize))
 
-		ch <- prometheus.MustNewConstMetric(c.descs["size"], prometheus.GaugeValue, totalSize, mount.Source, mount.FSType, mount.MountPoint)
-		ch <- prometheus.MustNewConstMetric(c.descs["free"], prometheus.GaugeValue, freeSize, mount.Source, mount.FSType, mount.MountPoint)
-		ch <- prometheus.MustNewConstMetric(c.descs["avail"], prometheus.GaugeValue, availSize, mount.Source, mount.FSType, mount.MountPoint)
+		// The type too: FUSE filesystems carry a user-chosen subtype, as in fuse.sshfs.
+		device, fsType, mountPoint := validLabelValue(mount.Source), validLabelValue(mount.FSType), validLabelValue(mount.MountPoint)
+		ch <- prometheus.MustNewConstMetric(c.descs["size"], prometheus.GaugeValue, totalSize, device, fsType, mountPoint)
+		ch <- prometheus.MustNewConstMetric(c.descs["free"], prometheus.GaugeValue, freeSize, device, fsType, mountPoint)
+		ch <- prometheus.MustNewConstMetric(c.descs["avail"], prometheus.GaugeValue, availSize, device, fsType, mountPoint)
 	}
 }

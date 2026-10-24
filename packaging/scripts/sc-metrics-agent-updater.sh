@@ -140,13 +140,10 @@ repair_package() {
     return 1
 }
 
-# Check and repair package if needed
-# TODO(SC-577): under set -e, a non-zero return exits the script on this line, so
-# HEALTH_STATUS and the repair branch below never run. Use
-# `HEALTH_STATUS=0; check_package_health || HEALTH_STATUS=$?` once the lifecycle
-# test for a half-installed package exists to prove the repair path.
-check_package_health
-HEALTH_STATUS=$?
+# Check and repair package if needed. The || keeps set -e from exiting on a
+# non-zero status before the repair below can run.
+HEALTH_STATUS=0
+check_package_health || HEALTH_STATUS=$?
 
 if [ ${HEALTH_STATUS} -eq 1 ]; then
     log "ERROR" "Package not installed, cannot update"
@@ -249,10 +246,6 @@ for attempt in $(seq 1 ${MAX_RETRIES}); do
     if [ "${attempt}" -lt "${MAX_RETRIES}" ]; then
         log "INFO" "Retrying in ${RETRY_DELAY}s..."
         sleep ${RETRY_DELAY}
-        
-        # Try to fix any issues before retry
-        dpkg --configure -a 2>&1 || true
-        apt_get_with_lock install -f -y 2>&1 || true
     fi
 done
 

@@ -97,6 +97,13 @@ func (box *container) packageVersion(t *testing.T, packageFile string) string {
 	return box.mustExec(t, "dpkg-deb", "--field", packageFile, "Version")
 }
 
+// packageStatus is dpkg's two-letter state for the installed package: "ii"
+// when fully installed, "iU" when unpacked but not configured.
+func (box *container) packageStatus(t *testing.T) string {
+	t.Helper()
+	return box.mustExec(t, "dpkg-query", "--show", "--showformat=${db:Status-Abbrev}", "sc-metrics-agent")
+}
+
 // installForUpdate installs packageFile with a working fake cloud and a signed
 // repository ready to publish to.
 func installForUpdate(t *testing.T, packageFile string) (*container, *fakeCloud) {
@@ -188,6 +195,50 @@ func TestUpdaterKeepsAStoppedAgentStopped(t *testing.T) {
 	assert.Equal(t, box.packageVersion(t, newerPackage), box.installedVersion(t))
 	active, _ := box.unitState(t, agentService)
 	assert.Equal(t, "inactive", active, "the updater started an agent that was stopped")
+}
+
+// The config download can fail during an update, for example when the VM's
+// network drops for a moment. The agent.yaml already on the VM still works, so
+// the update must go through and the agent keep running.
+func TestUpdaterUpgradesWhileTheConfigRepositoryIsDown(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	previousPID := box.mainPID(t)
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+
+	// Nothing listens on port 1, so every config download fails.
+	output, exitCode := box.exec(t, []string{"PATH=" + updaterPATH, "SC_CONFIG_REPO_URL=http://127.0.0.1:1"},
+		"/usr/bin/sc-metrics-agent-updater.sh")
+
+	require.Equal(t, 0, exitCode, output)
+	assert.Equal(t, "ii", box.packageStatus(t))
+	assert.Equal(t, box.packageVersion(t, newerPackage), box.installedVersion(t))
+	box.requireRunningNewBinary(t, previousPID)
+	box.requireRunningAndEnabled(t, updaterTimer)
+	assert.Equal(t, strings.TrimSpace(cloud.agentYAML), box.mustExec(t, "cat", "/etc/strettchcloud/config/agent.yaml"))
+}
+
+// A VM that reboots while the updater runs dpkg is left with the package
+// unpacked but not configured. The next run of the updater must finish the job.
+func TestUpdaterRepairsAnUpdateInterruptedByAReboot(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	// What the updater's dpkg run had done when the VM went down.
+	box.mustExec(t, "env", "SC_AGENT_AUTO_UPDATER=1", "dpkg", "--unpack", newerPackage)
+	require.Equal(t, "iU", box.packageStatus(t))
+	// At boot, systemd starts the enabled agent again.
+	box.mustExec(t, "systemctl", "start", agentService)
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	require.Equal(t, 0, exitCode, output)
+	assert.Equal(t, "ii", box.packageStatus(t))
+	assert.Equal(t, box.packageVersion(t, newerPackage), box.installedVersion(t))
+	box.requireRunningAndEnabled(t, agentService)
+	box.requireRunningAndEnabled(t, updaterTimer)
 }
 
 // Only the key in the APT source's keyring may deliver packages that run as

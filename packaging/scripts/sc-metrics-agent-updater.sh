@@ -104,8 +104,10 @@ check_package_health() {
     if [[ -z "$status" ]]; then
         log "ERROR" "Package not found in dpkg database"
         return 1
-    elif [[ "$status" == "ii" ]]; then
-        log "INFO" "Package health: OK (status: ii)"
+    # "hi" is a package the customer put on hold: installed and healthy. Treating
+    # it as broken would reinstall it, which stops the agent and drops the hold.
+    elif [[ "$status" == "ii" || "$status" == "hi" ]]; then
+        log "INFO" "Package health: OK (status: ${status})"
         return 0
     elif [[ "$status" =~ [FRU] ]]; then
         log "WARN" "Package needs repair (status: ${status})"

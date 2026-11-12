@@ -78,8 +78,8 @@ Remove it with `sudo apt-get purge sc-metrics-agent`.
 
 The agent's settings are fixed: how often it collects, what it collects, where it buffers and
 how it retries are the same on every VM, so a mistaken edit can't make many agents overload
-the platform. The installer writes the metadata service address to
-`/etc/strettchcloud/config/agent.yaml`, and the VM ID comes from `dmidecode -s system-uuid`.
+the platform. The agent reaches the metadata service at `http://169.254.169.254`, the same
+address on every VM, and the VM ID comes from `dmidecode -s system-uuid`.
 
 The log level is the only setting you can change. Set `log_level` in
 `/etc/sc-metrics-agent/config.yaml` (see [`config.example.yaml`](config.example.yaml)), or
@@ -113,8 +113,8 @@ mise run lint
 mise run security-scan # Trivy + govulncheck
 ```
 
-Run a local build with `sudo ./build/sc-metrics-agent`; it needs
-`/etc/strettchcloud/config/agent.yaml`. `-validate-config <file>` checks a config.yaml and exits.
+Run a local build with `sudo ./build/sc-metrics-agent`; it sends metrics only where
+`169.254.169.254` serves a metadata service. `-validate-config <file>` checks a config.yaml and exits.
 The end-to-end tests build the agent with the `e2e` tag, which adds `SC_TEST_*` variables for fake
 servers and short intervals (`pkg/config/overrides_e2e.go`); release builds don't have them. How CI
 builds and publishes releases is described in [.github/README.md](.github/README.md).

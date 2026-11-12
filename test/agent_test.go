@@ -137,9 +137,6 @@ type agentProcess struct {
 type agentOptions struct {
 	vmID      string
 	bufferDir string
-	// withoutAgentYAML leaves out agent.yaml, as when the installer couldn't
-	// write it.
-	withoutAgentYAML bool
 	// environment is added to the agent's settings, after them.
 	environment []string
 	arguments   []string
@@ -153,11 +150,6 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 	if options.bufferDir == "" {
 		options.bufferDir = filepath.Join(workDirectory, "buffer")
 	}
-	agentYAMLPath := filepath.Join(workDirectory, "agent.yaml")
-	if !options.withoutAgentYAML {
-		agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", cloud.metadata.URL())
-		require.NoError(t, os.WriteFile(agentYAMLPath, []byte(agentYAML), 0o600))
-	}
 	// dmidecode stands in for the VM's firmware: it prints the VM ID, or
 	// nothing when the test has none.
 	dmidecodePath := filepath.Join(workDirectory, "dmidecode")
@@ -165,7 +157,8 @@ func startAgent(t *testing.T, cloud *fakeCloud, options agentOptions) *agentProc
 
 	environment := []string{
 		"PATH=" + os.Getenv("PATH"),
-		"SC_TEST_AGENT_YAML=" + agentYAMLPath,
+		// Release builds always use 169.254.169.254.
+		"SC_TEST_METADATA_URL=" + cloud.metadata.URL(),
 		// Missing, so the machine's own config.yaml can't change the result.
 		"SC_TEST_CONFIG_YAML=" + filepath.Join(workDirectory, "config.yaml"),
 		"SC_TEST_DMIDECODE=" + dmidecodePath,
@@ -411,19 +404,6 @@ func TestValidateConfigChecksTheGivenConfigYAML(t *testing.T) {
 			assert.Contains(t, agent.log(t), testCase.output)
 		})
 	}
-}
-
-// Without agent.yaml, which the installer writes, the agent can't find the
-// metadata service, so it exits and says which file is missing.
-func TestAgentExitsWithoutAgentYAML(t *testing.T) {
-	t.Parallel()
-	cloud := newFakeCloud(t)
-	agent := startAgent(t, cloud, agentOptions{vmID: testVMID, withoutAgentYAML: true})
-
-	assert.Equal(t, 1, agent.waitForExit(t, waitForAgent))
-	assert.Contains(t, agent.log(t), "Failed to load configuration")
-	assert.Contains(t, agent.log(t), "agent.yaml")
-	assert.Empty(t, cloud.metadata.IssuedTokens())
 }
 
 func TestAgentExitsWhenItCantCreateItsBuffer(t *testing.T) {

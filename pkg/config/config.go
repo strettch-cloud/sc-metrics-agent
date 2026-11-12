@@ -17,19 +17,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AgentConfig represents the agent.yaml configuration structure
-type AgentConfig struct {
-	MetadataService struct {
-		BaseURL string `yaml:"base_url"`
-	} `yaml:"metadata_service"`
-}
+// Every VM reaches the metadata service at the same address, so it is fixed
+// here and nothing on a VM can point the agent elsewhere.
+const (
+	metadataServiceURL = "http://169.254.169.254"
+	tokenPath          = "/metadata/v1/auth-token"
+)
 
 // These are variables only so tests can use temporary files and a fake
 // dmidecode.
 var (
-	// agentConfigPath is where the installer saves agent.yaml, which holds the
-	// metadata service address.
-	agentConfigPath = "/etc/strettchcloud/config/agent.yaml"
 	// settingsPath is the package's config.yaml, which may set the log level
 	// and nothing else.
 	settingsPath = "/etc/sc-metrics-agent/config.yaml"
@@ -113,32 +110,14 @@ type CollectorConfig struct {
 	Schedstat bool `json:"schedstat"`
 }
 
-// readMetadataBaseURL reads the metadata service base URL from agent.yaml
-func readMetadataBaseURL() (string, error) {
-	data, err := os.ReadFile(agentConfigPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read agent config file %s: %w", agentConfigPath, err)
-	}
-
-	var config AgentConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return "", fmt.Errorf("failed to parse agent config %s: %w", agentConfigPath, err)
-	}
-
-	if config.MetadataService.BaseURL == "" {
-		return "", fmt.Errorf("metadata_service.base_url not found in %s", agentConfigPath)
-	}
-
-	return config.MetadataService.BaseURL, nil
-}
-
 // DefaultConfig returns the agent's fixed settings.
 func DefaultConfig() *Config {
 	return &Config{
-		CollectionInterval: 30 * time.Second,
-		HTTPTimeout:        30 * time.Second,
-		VMID:               detectVMID(),
-		Labels:             make(map[string]string),
+		CollectionInterval:      30 * time.Second,
+		HTTPTimeout:             30 * time.Second,
+		MetadataServiceEndpoint: metadataServiceURL + tokenPath,
+		VMID:                    detectVMID(),
+		Labels:                  make(map[string]string),
 		Collectors: CollectorConfig{
 			Processes:  true,
 			CPU:        true,
@@ -260,12 +239,6 @@ func load(settingsFile string, strict bool) (*Config, error) {
 		log.Printf("Ignoring %v", err)
 	}
 
-	metadataBaseURL, err := readMetadataBaseURL()
-	if err != nil {
-		return nil, err
-	}
-	cfg.MetadataServiceEndpoint = metadataBaseURL + "/metadata/v1/auth-token"
-
 	if cfg.VMID == "" {
 		return nil, fmt.Errorf("configuration validation failed: vm_id cannot be determined: dmidecode failed to return a valid UUID. Set SC_VM_ID in /etc/sc-metrics-agent/environment")
 	}
@@ -310,4 +283,3 @@ func (c *Config) setLogLevel(level, source string) error {
 	c.LogLevel = normalized
 	return nil
 }
-

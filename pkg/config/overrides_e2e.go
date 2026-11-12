@@ -15,9 +15,6 @@ import (
 // compile it, so none of this can be changed on a VM.
 
 func init() {
-	if path := os.Getenv("SC_TEST_AGENT_YAML"); path != "" {
-		agentConfigPath = path
-	}
 	if path := os.Getenv("SC_TEST_CONFIG_YAML"); path != "" {
 		settingsPath = path
 	}
@@ -49,5 +46,8 @@ func applyTestOverrides(cfg *Config) {
 	}
 	if path := os.Getenv("SC_TEST_BUFFER_DIR"); path != "" {
 		cfg.BufferDir = path
+	}
+	if url := os.Getenv("SC_TEST_METADATA_URL"); url != "" {
+		cfg.MetadataServiceEndpoint = url + tokenPath
 	}
 }

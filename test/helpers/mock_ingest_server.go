@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,6 +123,23 @@ var ResourceManagerSupportedMetrics = map[string]bool{
 	"node_filesystem_avail_bytes": true,
 }
 
+// ListenAddress is where the fake servers listen. The lifecycle tests set it to
+// Docker's bridge gateway, which their containers can reach.
+var ListenAddress = "127.0.0.1"
+
+// NewServer starts handler on ListenAddress, at a free port.
+func NewServer(handler http.Handler) *httptest.Server {
+	server := httptest.NewUnstartedServer(handler)
+	listener, err := net.Listen("tcp", net.JoinHostPort(ListenAddress, "0"))
+	if err != nil {
+		panic(fmt.Sprintf("listening on %s: %v", ListenAddress, err))
+	}
+	_ = server.Listener.Close()
+	server.Listener = listener
+	server.Start()
+	return server
+}
+
 // NewMockIngestServer creates a new mock server that behaves exactly like resource-manager
 func NewMockIngestServer(logger *zap.Logger) *MockIngestServer {
 	mock := &MockIngestServer{
@@ -129,7 +147,7 @@ func NewMockIngestServer(logger *zap.Logger) *MockIngestServer {
 		requests: make([]IngestRequest, 0),
 	}
 
-	mock.server = httptest.NewServer(http.HandlerFunc(mock.handleIngest))
+	mock.server = NewServer(http.HandlerFunc(mock.handleIngest))
 	return mock
 }
 
@@ -508,7 +526,7 @@ func NewMockMetadataServer(cloudAPIURL string, logger *zap.Logger) *MockMetadata
 	}
 
 	// Create the HTTP server
-	mock.server = httptest.NewServer(http.HandlerFunc(mock.handleRequest))
+	mock.server = NewServer(http.HandlerFunc(mock.handleRequest))
 	
 	return mock
 }
@@ -530,7 +548,13 @@ func (m *MockMetadataServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		zap.String("path", r.URL.Path),
 	)
 
-	// The agent builds this path from metadata_service.base_url.
+	// Like the metadata service at 169.254.169.254, refuse a request without the header.
+	if r.Header.Get("Metadata-Flavor") != "StrettchCloud" {
+		http.Error(w, "METADATA_FLAVOR_REQUIRED", http.StatusForbidden)
+		return
+	}
+
+	// The agent's token request.
 	if r.Method == "GET" && r.URL.Path == "/metadata/v1/auth-token" {
 		m.handleTokenRequest(w, r)
 		return

@@ -14,7 +14,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, 30*time.Second, cfg.CollectionInterval)
 	assert.Equal(t, 30*time.Second, cfg.HTTPTimeout)
-	assert.Empty(t, cfg.MetadataServiceEndpoint, "Load fills it in from agent.yaml")
+	assert.Equal(t, "http://169.254.169.254/metadata/v1/auth-token", cfg.MetadataServiceEndpoint)
 	assert.Empty(t, cfg.Labels)
 	assert.True(t, cfg.Collectors.Processes)
 	assert.True(t, cfg.Collectors.Schedstat)

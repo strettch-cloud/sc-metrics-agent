@@ -22,6 +22,10 @@ const (
 	
 	// Token cache lifetime
 	TokenCacheLifetime = 30 * time.Minute
+
+	// The metadata service at 169.254.169.254 refuses a request without this header.
+	HeaderMetadataFlavor = "Metadata-Flavor"
+	MetadataFlavor       = "StrettchCloud"
 )
 
 // TokenResponse represents the response from the metadata service
@@ -112,6 +116,7 @@ func (c *Client) fetchAuthToken(ctx context.Context, vmID string) (*TokenRespons
 
 	req.Header.Set(HeaderAccept, AcceptJSON)
 	req.Header.Set(HeaderXResourceID, vmID)
+	req.Header.Set(HeaderMetadataFlavor, MetadataFlavor)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

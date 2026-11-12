@@ -28,8 +28,6 @@ func TestAMetadataResponseTheAgentCantUseIsAnError(t *testing.T) {
 	unreachable := httptest.NewServer(http.NotFoundHandler())
 	unreachable.Close()
 	for name, testCase := range map[string]struct{ endpoint, want string }{
-		// The address comes from agent.yaml, so a typo there must fail
-		// cleanly.
 		"a malformed address": {"http://[::1", "failed to create request"},
 		"no connection":       {unreachable.URL, "failed to fetch auth token"},
 		"a response cut short": {metadataAnswering(t, func(response http.ResponseWriter, _ *http.Request) {
@@ -115,4 +113,21 @@ func TestTheCloudAPIAddressIsFetchedWhenNotYetKnown(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.test.invalid", url)
+}
+
+// The metadata service at 169.254.169.254 answers a request without this header
+// with 403 METADATA_FLAVOR_REQUIRED.
+func TestTheTokenRequestSendsTheMetadataFlavorHeader(t *testing.T) {
+	client := NewClient(metadataAnswering(t, func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Metadata-Flavor") != "StrettchCloud" {
+			http.Error(response, "METADATA_FLAVOR_REQUIRED", http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(TokenResponse{Token: "token", CloudAPIUrl: "https://api.test.invalid"})
+	}), time.Second, zap.NewNop())
+
+	token, err := client.GetAuthToken(t.Context(), "vm")
+
+	require.NoError(t, err)
+	assert.Equal(t, "token", token)
 }

@@ -11,21 +11,16 @@ import (
 )
 
 const (
-	agentYAMLWithAddress = "metadata_service:\n  base_url: http://metadata.test.invalid\n"
 	// installersConfig is what post-install.sh writes to config.yaml.
 	installersConfig = "# SC-Metrics-Agent Configuration\n"
 	testVMID         = "6F1C2B3A-9D4E-4F5A-8B6C-7D8E9F0A1B2C"
 )
 
-// useConfigFiles stands in for a VM's two files: agent.yaml, which the
-// installer downloads with the metadata address, and the package's
-// config.yaml. Empty content means the file doesn't exist. dmidecode reports
-// testVMID.
-func useConfigFiles(t *testing.T, agentYAML, settings string) {
+// useConfigFiles stands in for the package's config.yaml on a VM. Empty
+// content means the file doesn't exist. dmidecode reports testVMID.
+func useConfigFiles(t *testing.T, settings string) {
 	t.Helper()
-	directory := t.TempDir()
-	pointAt(t, &agentConfigPath, writeUnlessEmpty(t, filepath.Join(directory, "agent.yaml"), agentYAML))
-	pointAt(t, &settingsPath, writeUnlessEmpty(t, filepath.Join(directory, "config.yaml"), settings))
+	pointAt(t, &settingsPath, writeUnlessEmpty(t, filepath.Join(t.TempDir(), "config.yaml"), settings))
 	useFakeDMIDecode(t, testVMID)
 	t.Setenv("SC_LOG_LEVEL", "")
 	t.Setenv("SC_VM_ID", "")
@@ -65,7 +60,7 @@ func pointAtList(t *testing.T, variable *[]string, value []string) {
 // Every setting but the log level is fixed: on many VMs at once, a mistaken
 // interval or retry count could overload the platform.
 func TestLoadIgnoresTheVariablesThatUsedToChangeSettings(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	for name, value := range map[string]string{
 		"SC_COLLECTION_INTERVAL":       "1ms",
 		"SC_HTTP_TIMEOUT":              "1ms",
@@ -89,11 +84,11 @@ func TestLoadIgnoresTheVariablesThatUsedToChangeSettings(t *testing.T) {
 	assert.Equal(t, defaults.RetryInterval, cfg.RetryInterval)
 	assert.Empty(t, cfg.Labels)
 	assert.True(t, cfg.Collectors.CPU)
-	assert.Equal(t, "http://metadata.test.invalid/metadata/v1/auth-token", cfg.MetadataServiceEndpoint)
+	assert.Equal(t, "http://169.254.169.254/metadata/v1/auth-token", cfg.MetadataServiceEndpoint)
 }
 
 func TestLoadTakesTheLogLevelFromConfigYAMLInAnyCase(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "log_level: DEBUG\n")
+	useConfigFiles(t, "log_level: DEBUG\n")
 
 	cfg, err := Load()
 
@@ -102,7 +97,7 @@ func TestLoadTakesTheLogLevelFromConfigYAMLInAnyCase(t *testing.T) {
 }
 
 func TestLoadTakesTheLogLevelFromSCLogLevelOverConfigYAML(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "log_level: warn\n")
+	useConfigFiles(t, "log_level: warn\n")
 	t.Setenv("SC_LOG_LEVEL", "Error")
 
 	cfg, err := Load()
@@ -122,7 +117,7 @@ func TestAConfigYAMLThatSetsMoreThanTheLogLevelIsIgnored(t *testing.T) {
 		"not YAML":                           "log_level: [\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			useConfigFiles(t, agentYAMLWithAddress, settings)
+			useConfigFiles(t, settings)
 
 			cfg, err := Load()
 
@@ -136,7 +131,7 @@ func TestAConfigYAMLThatSetsMoreThanTheLogLevelIsIgnored(t *testing.T) {
 }
 
 func TestAnUnknownSCLogLevelIsIgnored(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	t.Setenv("SC_LOG_LEVEL", "verbose")
 
 	cfg, err := Load()
@@ -148,36 +143,39 @@ func TestAnUnknownSCLogLevelIsIgnored(t *testing.T) {
 
 // The updater runs --validate-config on config.yaml after every update.
 func TestValidateAcceptsTheConfigTheInstallerWrites(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, installersConfig)
+	useConfigFiles(t, installersConfig)
 
 	assert.NoError(t, Validate(settingsPath))
 }
 
 func TestValidateAcceptsAMissingConfigYAML(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 
 	assert.NoError(t, Validate(settingsPath))
 }
 
 // config.example.yaml is what people copy into config.yaml.
 func TestValidateAcceptsTheExampleConfig(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 
 	assert.NoError(t, Validate(filepath.Join("..", "..", "config.example.yaml")))
 }
 
-func TestLoadFailsWithoutAMetadataAddress(t *testing.T) {
-	useConfigFiles(t, "", installersConfig)
+// Every VM reaches the metadata service at 169.254.169.254, so the agent reads
+// the address from no file, agent.yaml included.
+func TestTheMetadataAddressIsFixed(t *testing.T) {
+	useConfigFiles(t, installersConfig)
 
-	_, err := Load()
+	cfg, err := Load()
 
-	assert.ErrorContains(t, err, agentConfigPath)
+	require.NoError(t, err)
+	assert.Equal(t, "http://169.254.169.254/metadata/v1/auth-token", cfg.MetadataServiceEndpoint)
 }
 
 // SC_VM_ID is only a fallback: where dmidecode reads an ID, nothing can make
 // the agent report as another VM.
 func TestTheVMIDComesFromDMIDecodeEvenWhenSCVMIDIsSet(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	t.Setenv("SC_VM_ID", "another-vm")
 
 	cfg, err := Load()
@@ -196,7 +194,7 @@ func TestSCVMIDIsUsedWhenDMIDecodeFindsNoID(t *testing.T) {
 		"all zeros":     "00000000-0000-0000-0000-000000000000",
 	} {
 		t.Run(name, func(t *testing.T) {
-			useConfigFiles(t, agentYAMLWithAddress, "")
+			useConfigFiles(t, "")
 			useFakeDMIDecode(t, dmidecodeOutput)
 			t.Setenv("SC_VM_ID", "vm-from-environment")
 
@@ -209,7 +207,7 @@ func TestSCVMIDIsUsedWhenDMIDecodeFindsNoID(t *testing.T) {
 }
 
 func TestLoadFailsWithoutAVMID(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	useFakeDMIDecode(t, "Not Settable")
 
 	_, err := Load()
@@ -217,26 +215,10 @@ func TestLoadFailsWithoutAVMID(t *testing.T) {
 	assert.ErrorContains(t, err, "vm_id cannot be determined")
 }
 
-func TestLoadFailsOnAnAgentYAMLWithoutAUsableAddress(t *testing.T) {
-	for name, testCase := range map[string]struct{ agentYAML, want string }{
-		"not YAML":    {"metadata_service: [\n", "failed to parse agent config"},
-		"no base_url": {"metadata_service:\n  other: value\n", "metadata_service.base_url not found"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			useConfigFiles(t, testCase.agentYAML, "")
-
-			_, err := Load()
-
-			assert.ErrorContains(t, err, testCase.want)
-			assert.ErrorContains(t, err, agentConfigPath)
-		})
-	}
-}
-
 // A dmidecode that fails outright, rather than printing no ID, counts as
 // finding none: SC_VM_ID is used.
 func TestSCVMIDIsUsedWhenDMIDecodeFails(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	script := filepath.Join(t.TempDir(), "dmidecode")
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755))
 	pointAtList(t, &dmidecodePaths, []string{script})
@@ -249,7 +231,7 @@ func TestSCVMIDIsUsedWhenDMIDecodeFails(t *testing.T) {
 }
 
 func TestAConfigYAMLTheAgentCantReadIsIgnored(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	require.NoError(t, os.Mkdir(settingsPath, 0o700))
 
 	cfg, err := Load()
@@ -279,7 +261,7 @@ func TestTheAgentVersionComesFromTheInstalledPackage(t *testing.T) {
 // A dmidecode that hangs, as on broken firmware, must not hang the agent's
 // start: after five seconds it falls back to SC_VM_ID.
 func TestAHangingDMIDecodeFallsBackToSCVMID(t *testing.T) {
-	useConfigFiles(t, agentYAMLWithAddress, "")
+	useConfigFiles(t, "")
 	script := filepath.Join(t.TempDir(), "dmidecode")
 	// exec, so the timeout kills sleep itself and not only a shell around it.
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 60\n"), 0o755))

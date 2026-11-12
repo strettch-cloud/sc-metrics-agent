@@ -17,7 +17,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +64,15 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 
+	// Each container has its own network, so the fakes listen on Docker's
+	// bridge gateway, which every container reaches.
+	gateway, err := exec.Command("docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}").CombinedOutput()
+	helpers.ListenAddress = strings.TrimSpace(string(gateway))
+	if err != nil || helpers.ListenAddress == "" {
+		fmt.Fprintf(os.Stderr, "could not find Docker's bridge gateway: %v\n%s", err, gateway)
+		os.Exit(2)
+	}
+
 	imageTag = "sc-metrics-agent-lifecycle:" + regexp.MustCompile(`[^a-z0-9.-]+`).ReplaceAllString(strings.ToLower(baseImage), "-")
 	build := exec.Command("docker", "build", "--quiet", "--build-arg", "BASE_IMAGE="+baseImage, "--tag", imageTag, ".")
 	if output, err := build.CombinedOutput(); err != nil {
@@ -76,37 +84,42 @@ func TestMain(m *testing.M) {
 
 // fakeCloud stands in for everything the package talks to: the config
 // repository post-install downloads agent.yaml from, the metadata service and
-// the ingest API. Containers share the host's network, so they reach these
-// servers on 127.0.0.1.
+// the ingest API.
 type fakeCloud struct {
 	ingest    *helpers.MockIngestServer
 	configURL string
 	agentYAML string
+	// metadataAddress is the fake metadata service's host:port, or empty when
+	// the cloud has none.
+	metadataAddress string
 }
 
-// newFakeCloud serves an agent.yaml whose metadata address is metadataURL, or
-// a working fake metadata service when metadataURL is empty.
-func newFakeCloud(t *testing.T, metadataURL string) *fakeCloud {
+// newFakeCloud serves the config repository and the ingest API, and a fake
+// metadata service when withMetadataService is set.
+func newFakeCloud(t *testing.T, withMetadataService bool) *fakeCloud {
 	t.Helper()
 	logger := zaptest.NewLogger(t)
 	ingest := helpers.NewMockIngestServer(logger)
 	t.Cleanup(ingest.Close)
-	if metadataURL == "" {
+	cloud := &fakeCloud{ingest: ingest}
+	if withMetadataService {
 		metadata := helpers.NewMockMetadataServer(ingest.BaseURL(), logger)
 		t.Cleanup(metadata.Close)
-		metadataURL = metadata.URL()
+		cloud.metadataAddress = strings.TrimPrefix(metadata.URL(), "http://")
 	}
-	agentYAML := fmt.Sprintf("metadata_service:\n  base_url: %q\n", metadataURL)
+	// The agent no longer reads agent.yaml, but post-install still downloads it.
+	cloud.agentYAML = "metadata_service:\n  base_url: \"http://169.254.169.254\"\n"
 	// download-config.sh fetches <repo>/<environment>/agent.yaml.
-	config := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	config := helpers.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/production/agent.yaml" {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(agentYAML))
+		_, _ = w.Write([]byte(cloud.agentYAML))
 	}))
 	t.Cleanup(config.Close)
-	return &fakeCloud{ingest: ingest, configURL: config.URL, agentYAML: agentYAML}
+	cloud.configURL = config.URL
+	return cloud
 }
 
 func (cloud *fakeCloud) metricsFromTestVM() int {
@@ -136,7 +149,6 @@ func startContainer(t *testing.T) *container {
 		// systemd as PID 1 needs to manage cgroups and mount tmpfs on /run.
 		"--privileged", "--cgroupns=host", "--volume", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"--tmpfs", "/run", "--tmpfs", "/run/lock",
-		"--network", "host",
 		"--volume", packagePath+":/packages/new.deb:ro",
 		"--volume", previousPackagePath+":/packages/previous.deb:ro",
 		imageTag)
@@ -199,10 +211,24 @@ func (box *container) configureAgent(t *testing.T) {
 // pointed at the fake config repository.
 func (box *container) install(t *testing.T, cloud *fakeCloud, packageFile string, extraArguments ...string) {
 	t.Helper()
+	box.routeMetadataService(t, cloud)
 	command := append([]string{"apt-get", "install", "--yes"}, extraArguments...)
 	command = append(command, "/packages/"+packageFile)
 	output, exitCode := box.exec(t, []string{"DEBIAN_FRONTEND=noninteractive", "SC_CONFIG_REPO_URL=" + cloud.configURL}, command...)
 	require.Equal(t, 0, exitCode, "installing %s failed:\n%s", packageFile, output)
+}
+
+// routeMetadataService sends the container's connections to 169.254.169.254:80,
+// the agent's fixed metadata address, to the cloud's fake metadata service, or
+// refuses them when the cloud has none.
+func (box *container) routeMetadataService(t *testing.T, cloud *fakeCloud) {
+	t.Helper()
+	table, rule := "filter", "OUTPUT --protocol tcp --destination 169.254.169.254 --dport 80 --jump REJECT"
+	if cloud.metadataAddress != "" {
+		table, rule = "nat", "OUTPUT --protocol tcp --destination 169.254.169.254 --dport 80 --jump DNAT --to-destination "+cloud.metadataAddress
+	}
+	// Checked first, so installing twice adds the rule once.
+	box.mustExec(t, "sh", "-c", fmt.Sprintf("iptables -t %[1]s -C %[2]s 2>/dev/null || iptables -t %[1]s -A %[2]s", table, rule))
 }
 
 func (box *container) unitState(t *testing.T, unit string) (active string, enabled string) {
@@ -227,7 +253,7 @@ func (box *container) mainPID(t *testing.T) string {
 
 func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 	t.Parallel()
-	cloud := newFakeCloud(t, "")
+	cloud := newFakeCloud(t, true)
 	box := startContainer(t)
 	box.configureAgent(t)
 	box.install(t, cloud, "new.deb")
@@ -327,8 +353,7 @@ func TestFreshInstallReinstallCrashAndRemove(t *testing.T) {
 // The install must still succeed and leave the agent enabled for first boot.
 func TestInstallSucceedsWithoutAMetadataService(t *testing.T) {
 	t.Parallel()
-	// Nothing listens on port 1, so every metadata request fails.
-	cloud := newFakeCloud(t, "http://127.0.0.1:1")
+	cloud := newFakeCloud(t, false)
 	box := startContainer(t)
 	box.configureAgent(t)
 
@@ -342,7 +367,7 @@ func TestInstallSucceedsWithoutAMetadataService(t *testing.T) {
 
 func TestUpgradeFromTheLatestRelease(t *testing.T) {
 	t.Parallel()
-	cloud := newFakeCloud(t, "")
+	cloud := newFakeCloud(t, true)
 	box := startContainer(t)
 	box.configureAgent(t)
 	box.install(t, cloud, "previous.deb")

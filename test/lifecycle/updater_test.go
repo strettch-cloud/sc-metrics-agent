@@ -108,7 +108,7 @@ func (box *container) packageStatus(t *testing.T) string {
 // repository ready to publish to.
 func installForUpdate(t *testing.T, packageFile string) (*container, *fakeCloud) {
 	t.Helper()
-	cloud := newFakeCloud(t, "")
+	cloud := newFakeCloud(t, true)
 	box := startContainer(t)
 	box.configureAgent(t)
 	box.setUpRepository(t)

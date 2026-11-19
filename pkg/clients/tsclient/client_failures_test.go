@@ -78,8 +78,10 @@ func TestParseRetryAfter(t *testing.T) {
 	for _, unusable := range []string{"", "0", "-1", "soon", time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)} {
 		assert.Zero(t, parseRetryAfter(unusable), "Retry-After %q", unusable)
 	}
-	inAMinute := parseRetryAfter(time.Now().Add(time.Minute).UTC().Format(http.TimeFormat))
-	assert.InDelta(t, time.Minute.Seconds(), inAMinute.Seconds(), 2)
+	inTenSeconds := parseRetryAfter(time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat))
+	assert.InDelta(t, 10, inTenSeconds.Seconds(), 2)
+	assert.Equal(t, maxRetryAfter, parseRetryAfter("120"))
+	assert.Equal(t, maxRetryAfter, parseRetryAfter(time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)))
 }
 
 func TestARequestThatFailsIsRetriedThenReported(t *testing.T) {

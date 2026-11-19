@@ -287,6 +287,12 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 		zap.Duration("retry_after", retryAfter),
 	)
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if err := c.authMgr.RenewRefusedToken(ctx, authToken); err != nil {
+			c.logger.Warn("Failed to get a new token after the old one was refused", zap.Error(err))
+		}
+	}
+
 	return response, nil
 }
 
@@ -316,26 +322,24 @@ func (c *Client) shouldRetry(statusCode int) bool {
 	}
 }
 
-// parseRetryAfter parses the Retry-After header value
+// maxRetryAfter caps the wait a Retry-After header asks for, so one answer
+// can't stall a round for longer than the HTTP timeout.
+const maxRetryAfter = 30 * time.Second
+
+// parseRetryAfter parses the Retry-After header value: seconds or an HTTP
+// date. It returns 0 for a missing, invalid or past value.
 func parseRetryAfter(value string) time.Duration {
 	if value == "" {
 		return 0
 	}
 
-	// Try parsing as seconds (integer)
-	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+	var wait time.Duration
+	if seconds, err := strconv.Atoi(value); err == nil {
+		wait = time.Duration(seconds) * time.Second
+	} else if t, err := http.ParseTime(value); err == nil {
+		wait = time.Until(t)
 	}
-
-	// Try parsing as HTTP date (not commonly used for this header)
-	if t, err := http.ParseTime(value); err == nil {
-		duration := time.Until(t)
-		if duration > 0 {
-			return duration
-		}
-	}
-
-	return 0
+	return max(0, min(wait, maxRetryAfter))
 }
 
 // Close closes the HTTP client

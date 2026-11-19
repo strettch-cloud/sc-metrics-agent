@@ -20,7 +20,11 @@ const (
 	// Values
 	AcceptJSON = "application/json"
 	
-	// Token cache lifetime
+	// A token is replaced this long before its expiresAt.
+	TokenRefreshMargin = time.Minute
+
+	// How long a token without a usable expiresAt is kept, unless the server
+	// refuses it first.
 	TokenCacheLifetime = 30 * time.Minute
 
 	// The metadata service at 169.254.169.254 refuses a request without this header.
@@ -32,6 +36,7 @@ const (
 type TokenResponse struct {
 	Token       string `json:"token"`
 	CloudAPIUrl string `json:"cloudAPIUrl"`
+	ExpiresAt   string `json:"expiresAt"`
 }
 
 // Client handles communication with the metadata service with token caching
@@ -44,7 +49,7 @@ type Client struct {
 	tokenMu       sync.RWMutex
 	cachedToken   string
 	cachedAPIURL  string
-	tokenExpiry   time.Time
+	refreshAt     time.Time
 	tokenLifetime time.Duration
 }
 
@@ -69,11 +74,11 @@ func NewClient(endpoint string, timeout time.Duration, logger *zap.Logger) *Clie
 func (c *Client) GetAuthToken(ctx context.Context, vmID string) (string, error) {
 	// Check if cached token is still valid
 	c.tokenMu.RLock()
-	if c.cachedToken != "" && time.Now().Before(c.tokenExpiry) {
+	if c.cachedToken != "" && time.Now().Before(c.refreshAt) {
 		token := c.cachedToken
 		c.tokenMu.RUnlock()
-		c.logger.Debug("Using cached auth token", 
-			zap.Duration("remaining_lifetime", time.Until(c.tokenExpiry)))
+		c.logger.Debug("Using cached auth token",
+			zap.Duration("refresh_in", time.Until(c.refreshAt)))
 		return token, nil
 	}
 	c.tokenMu.RUnlock()
@@ -83,7 +88,7 @@ func (c *Client) GetAuthToken(ctx context.Context, vmID string) (string, error) 
 	defer c.tokenMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if c.cachedToken != "" && time.Now().Before(c.tokenExpiry) {
+	if c.cachedToken != "" && time.Now().Before(c.refreshAt) {
 		return c.cachedToken, nil
 	}
 
@@ -93,16 +98,44 @@ func (c *Client) GetAuthToken(ctx context.Context, vmID string) (string, error) 
 		return "", err
 	}
 
-	// Cache the token and CloudAPI URL
 	c.cachedToken = tokenResp.Token
-	c.cachedAPIURL = tokenResp.CloudAPIUrl
-	c.tokenExpiry = time.Now().Add(c.tokenLifetime)
-	
+	// An answer without the address keeps the one the agent had.
+	if tokenResp.CloudAPIUrl != "" {
+		c.cachedAPIURL = tokenResp.CloudAPIUrl
+	} else {
+		c.logger.Warn("CloudAPI URL not available in metadata response")
+	}
+	c.refreshAt = c.refreshTime(tokenResp.ExpiresAt)
+
 	c.logger.Info("Successfully fetched and cached new auth token",
-		zap.Time("expires_at", c.tokenExpiry),
-		zap.Duration("lifetime", c.tokenLifetime))
+		zap.Time("refresh_at", c.refreshAt))
 
 	return tokenResp.Token, nil
+}
+
+// refreshTime is TokenRefreshMargin before expiresAt, or tokenLifetime from
+// now when expiresAt is missing or malformed. A token with less than the
+// margin left is kept for half the time it has, so it isn't fetched again on
+// every call.
+func (c *Client) refreshTime(expiresAt string) time.Time {
+	now := time.Now()
+	expiry, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		c.logger.Debug("Token has no usable expiresAt, keeping it for the default lifetime",
+			zap.String("expires_at", expiresAt), zap.Duration("lifetime", c.tokenLifetime))
+		return now.Add(c.tokenLifetime)
+	}
+	if refresh := expiry.Add(-TokenRefreshMargin); refresh.After(now) {
+		return refresh
+	}
+	return now.Add(expiry.Sub(now) / 2)
+}
+
+// RefreshAt is when the cached token is due to be replaced.
+func (c *Client) RefreshAt() time.Time {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+	return c.refreshAt
 }
 
 // fetchAuthToken fetches a new authentication token and metadata
@@ -151,29 +184,19 @@ func (c *Client) fetchAuthToken(ctx context.Context, vmID string) (*TokenRespons
 	return &tokenResp, nil
 }
 
-// InvalidateCache forces the next GetAuthToken call to fetch a new token
+// InvalidateCache forces the next GetAuthToken call to fetch a new token.
+// The cached token and URL are kept in case that fetch fails.
 func (c *Client) InvalidateCache() {
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
-	
-	c.cachedToken = ""
-	c.cachedAPIURL = ""
-	c.tokenExpiry = time.Time{}
+
+	c.refreshAt = time.Time{}
 	c.logger.Debug("Token cache invalidated")
 }
 
-// GetCloudAPIURL returns the cached CloudAPI URL
+// GetCloudAPIURL returns the cached CloudAPI URL, fetching a token first if
+// the cached one is due.
 func (c *Client) GetCloudAPIURL(ctx context.Context, vmID string) (string, error) {
-	c.tokenMu.RLock()
-	if c.cachedAPIURL != "" && time.Now().Before(c.tokenExpiry) {
-		url := c.cachedAPIURL
-		c.tokenMu.RUnlock()
-		c.logger.Debug("Using cached CloudAPI URL", zap.String("url", url))
-		return url, nil
-	}
-	c.tokenMu.RUnlock()
-
-	// Need to fetch new metadata to get the URL
 	_, err := c.GetAuthToken(ctx, vmID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get CloudAPI URL: %w", err)

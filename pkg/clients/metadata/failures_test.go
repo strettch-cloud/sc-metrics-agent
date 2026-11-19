@@ -71,9 +71,13 @@ func TestTheCloudAPIAddressIsUnknownWhileTheMetadataServiceIsDown(t *testing.T) 
 	assert.ErrorContains(t, err, "failed to get CloudAPI URL")
 }
 
-// Every token lifetime the auth manager fetches a new token. A refresh that
-// fails is reported and keeps the token the agent already has.
+// The refresh loop fetches a new token TokenRefreshMargin before the token's
+// expiresAt. A refresh that fails is reported, keeps the token the agent
+// already has, and is tried again after refreshRetryInterval.
 func TestTheRefreshLoopReplacesTheTokenAndSurvivesAFailedRefresh(t *testing.T) {
+	original := refreshRetryInterval
+	refreshRetryInterval = 20 * time.Millisecond
+	t.Cleanup(func() { refreshRetryInterval = original })
 	var metadataServiceDown atomic.Bool
 	var issuedTokens atomic.Int64
 	endpoint := metadataAnswering(t, func(response http.ResponseWriter, _ *http.Request) {
@@ -84,13 +88,12 @@ func TestTheRefreshLoopReplacesTheTokenAndSurvivesAFailedRefresh(t *testing.T) {
 		_ = json.NewEncoder(response).Encode(TokenResponse{
 			Token:       fmt.Sprintf("token-%d", issuedTokens.Add(1)),
 			CloudAPIUrl: "https://api.test.invalid",
+			ExpiresAt:   time.Now().Add(TokenRefreshMargin + 2*time.Second).UTC().Format(time.RFC3339),
 		})
 	})
 	core, logs := observer.New(zap.ErrorLevel)
 	manager := NewAuthManager(&config.Config{MetadataServiceEndpoint: endpoint, HTTPTimeout: time.Second, VMID: "vm"}, zap.New(core))
 	t.Cleanup(manager.Close)
-	// Thirty minutes in the agent.
-	manager.refreshTicker.Reset(20 * time.Millisecond)
 	require.NoError(t, manager.EnsureValidToken(t.Context()))
 
 	manager.StartRefresh(t.Context())
@@ -98,7 +101,7 @@ func TestTheRefreshLoopReplacesTheTokenAndSurvivesAFailedRefresh(t *testing.T) {
 	assert.Eventually(t, func() bool { return manager.GetCurrentToken() != "token-1" }, 5*time.Second, 10*time.Millisecond,
 		"the refresh loop never replaced the first token")
 	metadataServiceDown.Store(true)
-	assert.Eventually(t, func() bool { return logs.FilterMessage("Background token refresh failed").Len() > 0 }, 5*time.Second, 10*time.Millisecond,
+	assert.Eventually(t, func() bool { return logs.FilterMessage("Background token refresh failed").Len() > 0 }, 10*time.Second, 10*time.Millisecond,
 		"a failed refresh wasn't reported")
 	assert.NotEmpty(t, manager.GetCurrentToken(), "a failed refresh dropped the token the agent had")
 }

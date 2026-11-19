@@ -32,7 +32,9 @@ The agent only runs on Linux; on macOS use a Linux VM or container to run it.
    `mise run lint` pass.
 3. Use a [Conventional Commits](https://www.conventionalcommits.org) title, e.g.
    `fix: retry metadata requests on timeout`. Pull requests are squash-merged, so the title
-   becomes the commit message.
+   becomes the commit message, and its type sets the next version: `feat` raises the minor
+   number, anything else the patch number. CI checks the title; run
+   `git config core.hooksPath .githooks` to check commit messages locally too.
 4. Open the pull request against `main`. CI runs the same checks; a maintainer will review it.
 
 Changes to `.github/`, `packaging/`, `go.mod`/`go.sum` and `mise.toml` affect how releases are

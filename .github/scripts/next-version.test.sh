@@ -47,8 +47,10 @@ commit() {
   commit_clock=$((commit_clock + 60))
   local when="@$commit_clock +0000"
   if [ "$#" -ge 2 ]; then
-    GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
-      git commit -q --allow-empty -m "$1" -m "$2"
+    # The message goes on stdin: Linux refuses a single argument over 128 KiB,
+    # and some tests use a far longer body.
+    printf '%s\n\n%s\n' "$1" "$2" | GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
+      git commit -q --allow-empty -F -
   else
     GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
       git commit -q --allow-empty -m "$1"

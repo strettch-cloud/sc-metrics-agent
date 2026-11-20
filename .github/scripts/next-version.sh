@@ -47,9 +47,12 @@ bump="patch"
 breaking=""
 while IFS= read -r sha; do
   subject=$(git log -1 --format=%s "$sha")
+  # Read whole before grep: piping git into grep -q would let grep exit at the
+  # first match and git die of SIGPIPE, which pipefail turns into "no match".
+  body=$(git log -1 --format=%b "$sha")
   if printf '%s' "$subject" | grep -qE '^feat(\([^)]*\))?!?:'; then bump=minor; fi
   if printf '%s' "$subject" | grep -qE '^[a-z]+(\([^)]*\))?!:' \
-    || git log -1 --format=%b "$sha" | grep -qE '^[[:space:]]*BREAKING[ -]CHANGE:'; then
+    || grep -qE '^[[:space:]]*BREAKING[ -]CHANGE:' <<< "$body"; then
     breaking+="${subject} ($(git rev-parse --short "$sha"))"$'\n'
   fi
 done <<< "$commits"

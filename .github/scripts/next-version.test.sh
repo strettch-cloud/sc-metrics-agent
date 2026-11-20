@@ -506,6 +506,22 @@ test_breaking_change_hyphen_footer_is_listed() {
   expect_in_file "$summary_file" "fix: report disk usage in bytes" "the run summary"
 }
 
+# The body is far larger than a pipe buffer, so a search that stops reading at
+# the footer would leave git writing to a closed pipe.
+test_breaking_change_footer_before_a_long_body_is_listed() {
+  new_repo
+  commit "feat: report disk usage"
+  tag "0.3.1"
+  commit "fix: report disk usage in bytes" \
+    "BREAKING CHANGE: dashboards reading kilobytes must convert
+$(printf 'every disk usage value is now in bytes\n%.0s' $(seq 1 10000))"
+
+  run_release stable
+
+  expect_version "0.3.2"
+  expect_in_file "$summary_file" "fix: report disk usage in bytes" "the run summary"
+}
+
 test_breaking_feat_beta_is_listed() {
   new_repo
   commit "feat: report disk usage"
@@ -745,6 +761,8 @@ run_test "a fix with a BREAKING CHANGE footer is listed and raises only the patc
   test_breaking_change_footer_is_listed_and_raises_patch
 run_test "a fix with a BREAKING-CHANGE footer is listed and raises only the patch number" \
   test_breaking_change_hyphen_footer_is_listed
+run_test "a BREAKING CHANGE footer followed by a body larger than a pipe buffer is listed" \
+  test_breaking_change_footer_before_a_long_body_is_listed
 run_test "a beta run lists a breaking feat in the run summary and releases 0.4.0-beta.1" \
   test_breaking_feat_beta_is_listed
 run_test "a breaking commit released before stable 1.0.0 is not listed again" \

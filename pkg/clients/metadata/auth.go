@@ -9,13 +9,26 @@ import (
 	"go.uber.org/zap"
 )
 
-// AuthManager handles periodic token refresh for metadata service authentication.
+// refreshRetryInterval is how long the refresh loop waits after a failed
+// refresh. A variable only so tests can shorten it before NewAuthManager.
+var refreshRetryInterval = 30 * time.Second
+
+// AuthManager keeps a token from the metadata service, replacing it before it
+// expires and as soon as the server refuses it.
 type AuthManager struct {
-	client        *Client
-	vmID          string
-	logger        *zap.Logger
-	refreshTicker *time.Ticker
-	stopCh        chan struct{}
+	client *Client
+	vmID   string
+	logger *zap.Logger
+	stopCh chan struct{}
+	// retryInterval is refreshRetryInterval when the manager was made.
+	retryInterval time.Duration
+	// fetched wakes the refresh loop when a fetch moves the refresh time, so
+	// the loop waits for the new token's refresh time, not the previous one's.
+	fetched chan struct{}
+
+	// fetchMu lets one fetch run at a time, so a token refused by both the
+	// ingest and the heartbeat is replaced once.
+	fetchMu sync.Mutex
 
 	// mutex guards the two fields below: the refresh loop writes them while
 	// the pipeline, the heartbeat and the ingest client read them.
@@ -26,23 +39,30 @@ type AuthManager struct {
 
 // NewAuthManager creates a new auth manager.
 func NewAuthManager(cfg *config.Config, logger *zap.Logger) *AuthManager {
-	client := NewClient(cfg.MetadataServiceEndpoint, cfg.HTTPTimeout, logger)
 	return &AuthManager{
-		client:        client,
-		vmID:          cfg.VMID,
-		logger:        logger,
-		stopCh:        make(chan struct{}),
-		refreshTicker: time.NewTicker(client.tokenLifetime),
+		client: NewClient(cfg.MetadataServiceEndpoint, cfg.HTTPTimeout, logger),
+		vmID:   cfg.VMID,
+		logger: logger,
+		stopCh: make(chan struct{}),
+
+		retryInterval: refreshRetryInterval,
+		fetched:       make(chan struct{}, 1),
 	}
 }
 
-// fetchAndStoreToken fetches a token and CloudAPI URL and stores them internally.
+// fetchAndStoreToken fetches a token and CloudAPI URL and stores them
+// internally. On failure the token and URL the manager had are kept.
 func (am *AuthManager) fetchAndStoreToken(ctx context.Context, forceFetch bool) error {
+	am.fetchMu.Lock()
+	defer am.fetchMu.Unlock()
+	return am.fetchAndStoreTokenLocked(ctx, forceFetch)
+}
+
+func (am *AuthManager) fetchAndStoreTokenLocked(ctx context.Context, forceFetch bool) error {
+	previousRefreshAt := am.client.RefreshAt()
 	if forceFetch {
 		am.logger.Debug("Forcing token refresh")
 		am.client.InvalidateCache()
-	} else {
-		am.logger.Debug("Fetching token (using cache if valid)")
 	}
 
 	token, err := am.client.GetAuthToken(ctx, am.vmID)
@@ -52,8 +72,17 @@ func (am *AuthManager) fetchAndStoreToken(ctx context.Context, forceFetch bool) 
 	am.mutex.Lock()
 	am.currentToken = token
 	am.mutex.Unlock()
+	if !am.client.RefreshAt().Equal(previousRefreshAt) {
+		select {
+		case am.fetched <- struct{}{}:
+		default:
+		}
+	}
 
-	cloudAPIURL, err := am.client.GetCloudAPIURL(ctx, am.vmID)
+	// The URL that came with this token. Asking the client for it with a
+	// fetch would get a second token when this one is already due (an
+	// expiresAt in the past), leaving the manager holding the first.
+	cloudAPIURL, err := am.client.cachedCloudAPIURL()
 	if err != nil {
 		return err
 	}
@@ -65,24 +94,46 @@ func (am *AuthManager) fetchAndStoreToken(ctx context.Context, forceFetch bool) 
 	return nil
 }
 
-// EnsureValidToken fetches a valid token and stores it internally.
+// EnsureValidToken fetches a new token if the current one is due, and stores
+// it internally. It makes no request while the current token is good.
 func (am *AuthManager) EnsureValidToken(ctx context.Context) error {
 	return am.fetchAndStoreToken(ctx, false)
 }
 
-// StartRefresh starts automatic token refresh.
+// RenewRefusedToken fetches a new token at once after the server refused
+// refused. It does nothing if that token was already replaced.
+func (am *AuthManager) RenewRefusedToken(ctx context.Context, refused string) error {
+	am.fetchMu.Lock()
+	defer am.fetchMu.Unlock()
+	if am.GetCurrentToken() != refused {
+		return nil
+	}
+	am.logger.Warn("Token refused, fetching a new one")
+	return am.fetchAndStoreTokenLocked(ctx, true)
+}
+
+// StartRefresh replaces the token when it is due, without waiting for a round.
 func (am *AuthManager) StartRefresh(ctx context.Context) {
 	go func() {
 		for {
+			wait := time.Until(am.client.RefreshAt())
+			if wait <= 0 {
+				wait = am.retryInterval
+			}
+			timer := time.NewTimer(wait)
 			select {
-			case <-am.refreshTicker.C:
-				if err := am.refresh(ctx); err != nil {
+			case <-timer.C:
+				if err := am.EnsureValidToken(ctx); err != nil {
 					am.logger.Error("Background token refresh failed", zap.Error(err))
 				}
+			case <-am.fetched:
+				timer.Stop()
 			case <-ctx.Done():
+				timer.Stop()
 				am.logger.Info("Token refresh stopped due to context cancel")
 				return
 			case <-am.stopCh:
+				timer.Stop()
 				am.logger.Info("Token refresh stopped")
 				return
 			}
@@ -111,8 +162,5 @@ func (am *AuthManager) GetCloudAPIURL() string {
 
 // Close stops the refresh loop.
 func (am *AuthManager) Close() {
-	if am.refreshTicker != nil {
-		am.refreshTicker.Stop()
-	}
 	close(am.stopCh)
 }

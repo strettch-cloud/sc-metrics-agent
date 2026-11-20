@@ -87,10 +87,12 @@ func TestACollectorThatCantReadProcReportsNothing(t *testing.T) {
 	}
 }
 
-func TestTheCPUCollectorNeedsPerCPULines(t *testing.T) {
+func TestTheCPUCollectorReadsTheTotalLineOnly(t *testing.T) {
 	onlyTheTotal, _ := fakeProcFS(t, map[string]string{"stat": "cpu  1 2 3 4 5 6 7 8 0 0\nbtime 1700000000\n"})
+	assert.Len(t, collect(&cpuCollector{procFS: onlyTheTotal, logger: zap.NewNop()}, ""), 8)
 
-	assert.Empty(t, collect(&cpuCollector{procFS: onlyTheTotal, logger: zap.NewNop()}, ""))
+	onlyCores, _ := fakeProcFS(t, map[string]string{"stat": "cpu0 1 2 3 4 5 6 7 8 0 0\nbtime 1700000000\n"})
+	assert.Empty(t, collect(&cpuCollector{procFS: onlyCores, logger: zap.NewNop()}, ""))
 }
 
 // Disk I/O is reported for mounted block devices only: not for pseudo or

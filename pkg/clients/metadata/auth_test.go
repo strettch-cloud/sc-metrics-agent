@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/strettch-cloud/sc-metrics-agent/pkg/config"
 )
@@ -67,4 +70,110 @@ func TestAuthManagerTokenCanBeReadWhileItIsRefreshed(t *testing.T) {
 
 	assert.Equal(t, "token-21", manager.GetCurrentToken(), "each refresh must fetch and store a new token")
 	assert.Equal(t, "https://api.test.invalid", manager.GetCloudAPIURL())
+}
+
+func TestWhenATokenIsDueForRefresh(t *testing.T) {
+	client := NewClient("", time.Second, zaptest.NewLogger(t))
+	now := time.Now()
+	stamp := func(d time.Duration) string { return now.Add(d).UTC().Format(time.RFC3339) }
+
+	assert.WithinDuration(t, now.Add(time.Hour-TokenRefreshMargin), client.refreshTime(stamp(time.Hour)), 2*time.Second,
+		"a token is replaced TokenRefreshMargin before expiresAt")
+	assert.WithinDuration(t, now.Add(20*time.Second), client.refreshTime(stamp(40*time.Second)), 2*time.Second,
+		"a token with less than the margin left is kept for half of it")
+	for _, expiresAt := range []string{"", "tomorrow"} {
+		assert.WithinDuration(t, now.Add(TokenCacheLifetime), client.refreshTime(expiresAt), 2*time.Second,
+			"a token without a usable expiresAt is kept for TokenCacheLifetime")
+	}
+}
+
+func TestARefusedTokenIsReplacedOnce(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(TokenResponse{
+			Token:       fmt.Sprintf("token-%d", requests.Add(1)),
+			CloudAPIUrl: "https://api.test.invalid",
+		})
+	}))
+	t.Cleanup(server.Close)
+	manager := newTestAuthManager(t, server.URL)
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+
+	require.NoError(t, manager.RenewRefusedToken(t.Context(), "token-1"))
+	require.NoError(t, manager.RenewRefusedToken(t.Context(), "token-1"))
+
+	assert.Equal(t, "token-2", manager.GetCurrentToken())
+	assert.EqualValues(t, 2, requests.Load(), "a token already replaced is not replaced again")
+}
+
+func TestTheRefreshLoopStopsWithItsContext(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	manager := NewAuthManager(&config.Config{MetadataServiceEndpoint: newMetadataServer(t).URL, HTTPTimeout: time.Second, VMID: "vm"}, zap.New(core))
+	t.Cleanup(manager.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	manager.StartRefresh(ctx)
+	cancel()
+
+	assert.Eventually(t, func() bool { return logs.FilterMessage("Token refresh stopped due to context cancel").Len() == 1 },
+		5*time.Second, 10*time.Millisecond)
+}
+
+// A token replaced while the refresh loop waits for the previous token's
+// refresh time is itself refreshed on time.
+func TestTheRefreshLoopFollowsAReplacedToken(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		n := requests.Add(1)
+		lifetime := time.Hour
+		if n == 2 {
+			lifetime = TokenRefreshMargin + 2*time.Second
+		}
+		_ = json.NewEncoder(response).Encode(TokenResponse{
+			Token:       fmt.Sprintf("token-%d", n),
+			CloudAPIUrl: "https://api.test.invalid",
+			ExpiresAt:   time.Now().Add(lifetime).UTC().Format(time.RFC3339),
+		})
+	}))
+	t.Cleanup(server.Close)
+	manager := newTestAuthManager(t, server.URL)
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+	manager.StartRefresh(t.Context())
+
+	require.NoError(t, manager.RenewRefusedToken(t.Context(), "token-1"))
+
+	assert.Eventually(t, func() bool { return manager.GetCurrentToken() == "token-3" }, 5*time.Second, 10*time.Millisecond,
+		"the loop kept waiting for the first token's refresh time")
+}
+
+// A token that arrives already expired is stored with the address that came
+// with it, and the manager holds the token the client cached; the next call
+// replaces it.
+func TestATokenThatArrivesExpiredIsKeptUntilTheNextCall(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		n := requests.Add(1)
+		expiresAt := time.Now().Add(time.Hour)
+		if n == 1 {
+			expiresAt = time.Now().Add(-time.Minute)
+		}
+		_ = json.NewEncoder(response).Encode(TokenResponse{
+			Token:       fmt.Sprintf("token-%d", n),
+			CloudAPIUrl: fmt.Sprintf("https://api-%d.test.invalid", n),
+			ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
+		})
+	}))
+	t.Cleanup(server.Close)
+	manager := newTestAuthManager(t, server.URL)
+
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+
+	assert.EqualValues(t, 1, requests.Load())
+	assert.Equal(t, "token-1", manager.GetCurrentToken())
+	assert.Equal(t, "https://api-1.test.invalid", manager.GetCloudAPIURL())
+
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+
+	assert.Equal(t, "token-2", manager.GetCurrentToken())
+	assert.Equal(t, "https://api-2.test.invalid", manager.GetCloudAPIURL())
 }

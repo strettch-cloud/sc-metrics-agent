@@ -118,3 +118,62 @@ func TestTheRefreshLoopStopsWithItsContext(t *testing.T) {
 	assert.Eventually(t, func() bool { return logs.FilterMessage("Token refresh stopped due to context cancel").Len() == 1 },
 		5*time.Second, 10*time.Millisecond)
 }
+
+// A token replaced while the refresh loop waits for the previous token's
+// refresh time is itself refreshed on time.
+func TestTheRefreshLoopFollowsAReplacedToken(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		n := requests.Add(1)
+		lifetime := time.Hour
+		if n == 2 {
+			lifetime = TokenRefreshMargin + 2*time.Second
+		}
+		_ = json.NewEncoder(response).Encode(TokenResponse{
+			Token:       fmt.Sprintf("token-%d", n),
+			CloudAPIUrl: "https://api.test.invalid",
+			ExpiresAt:   time.Now().Add(lifetime).UTC().Format(time.RFC3339),
+		})
+	}))
+	t.Cleanup(server.Close)
+	manager := newTestAuthManager(t, server.URL)
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+	manager.StartRefresh(t.Context())
+
+	require.NoError(t, manager.RenewRefusedToken(t.Context(), "token-1"))
+
+	assert.Eventually(t, func() bool { return manager.GetCurrentToken() == "token-3" }, 5*time.Second, 10*time.Millisecond,
+		"the loop kept waiting for the first token's refresh time")
+}
+
+// A token that arrives already expired is stored with the address that came
+// with it, and the manager holds the token the client cached; the next call
+// replaces it.
+func TestATokenThatArrivesExpiredIsKeptUntilTheNextCall(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		n := requests.Add(1)
+		expiresAt := time.Now().Add(time.Hour)
+		if n == 1 {
+			expiresAt = time.Now().Add(-time.Minute)
+		}
+		_ = json.NewEncoder(response).Encode(TokenResponse{
+			Token:       fmt.Sprintf("token-%d", n),
+			CloudAPIUrl: fmt.Sprintf("https://api-%d.test.invalid", n),
+			ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
+		})
+	}))
+	t.Cleanup(server.Close)
+	manager := newTestAuthManager(t, server.URL)
+
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+
+	assert.EqualValues(t, 1, requests.Load())
+	assert.Equal(t, "token-1", manager.GetCurrentToken())
+	assert.Equal(t, "https://api-1.test.invalid", manager.GetCloudAPIURL())
+
+	require.NoError(t, manager.EnsureValidToken(t.Context()))
+
+	assert.Equal(t, "token-2", manager.GetCurrentToken())
+	assert.Equal(t, "https://api-2.test.invalid", manager.GetCloudAPIURL())
+}

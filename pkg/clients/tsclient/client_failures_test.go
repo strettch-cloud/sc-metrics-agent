@@ -3,6 +3,7 @@ package tsclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -154,4 +155,36 @@ func TestABatchWithAValueJSONCantHoldIsAnError(t *testing.T) {
 	_, err := client.CompressMetrics([]aggregate.MetricWithValue{{Name: "node_load1", Value: math.NaN()}})
 
 	assert.ErrorContains(t, err, "failed to marshal metrics")
+}
+
+// A refused token is replaced even when the refusal's body is cut short.
+func TestATokenRefusedWithABodyCutShortIsReplaced(t *testing.T) {
+	t.Parallel()
+	var issuedTokens atomic.Int64
+	metadataService := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(metadata.TokenResponse{
+			Token:       fmt.Sprintf("token-%d", issuedTokens.Add(1)),
+			CloudAPIUrl: "https://api.test.invalid",
+		})
+	}))
+	t.Cleanup(metadataService.Close)
+	ingest := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Length", "100")
+		response.WriteHeader(http.StatusUnauthorized)
+		_, _ = response.Write([]byte("{"))
+	}))
+	t.Cleanup(ingest.Close)
+	authMgr := metadata.NewAuthManager(&config.Config{
+		MetadataServiceEndpoint: metadataService.URL,
+		HTTPTimeout:             time.Second,
+		VMID:                    "vm",
+	}, zap.NewNop())
+	t.Cleanup(authMgr.Close)
+	require.NoError(t, authMgr.EnsureValidToken(context.Background()))
+	client := NewClient(ClientConfig{AuthMgr: authMgr, Timeout: time.Second, RetryDelay: 10 * time.Millisecond}, zap.NewNop())
+
+	_, err := client.sendRequest(context.Background(), []byte("batch"), "application/x-protobuf", "token-1", ingest.URL)
+
+	assert.ErrorContains(t, err, "failed to read response body")
+	assert.Equal(t, "token-2", authMgr.GetCurrentToken())
 }

@@ -3,6 +3,7 @@ package tsclient
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,7 +80,7 @@ func TestSendingBatchesAloneStopsOnAFailedSendOrShutdown(t *testing.T) {
 
 	t.Run("a send that fails", func(t *testing.T) {
 		sender := &fakeSender{endpointAvailable: true, results: []sendResult{
-			{status: 400}, {status: 202}, {err: errors.New("connection refused")},
+			{status: http.StatusBadRequest}, {status: http.StatusAccepted}, {err: errors.New("connection refused")},
 		}}
 		w := newTestWriter(t, 1024, sender)
 		require.NoError(t, w.WriteMetrics(context.Background(), batch("a"), ""))
@@ -94,10 +95,10 @@ func TestSendingBatchesAloneStopsOnAFailedSendOrShutdown(t *testing.T) {
 	t.Run("a stopped agent", func(t *testing.T) {
 		splitSendInterval = time.Hour
 		stopping, stop := context.WithCancel(context.Background())
-		sender := &fakeSender{endpointAvailable: true, results: []sendResult{{status: 400}}}
+		sender := &fakeSender{endpointAvailable: true, results: []sendResult{{status: http.StatusBadRequest}}}
 		w := newTestWriter(t, 1024, sender)
 		require.NoError(t, w.WriteMetrics(stopping, batch("a"), ""))
-		time.AfterFunc(50*time.Millisecond, stop)
+		sender.sent = stop
 
 		require.NoError(t, w.WriteMetrics(stopping, batch("b"), "token"))
 

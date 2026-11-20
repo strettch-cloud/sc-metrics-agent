@@ -265,6 +265,13 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// A refused token is renewed whether or not its body can be read.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if err := c.authMgr.RenewRefusedToken(ctx, authToken); err != nil {
+			c.logger.Warn("Failed to get a new token after the old one was refused", zap.Error(err))
+		}
+	}
+
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -286,12 +293,6 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 		zap.Int("response_size", len(body)),
 		zap.Duration("retry_after", retryAfter),
 	)
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		if err := c.authMgr.RenewRefusedToken(ctx, authToken); err != nil {
-			c.logger.Warn("Failed to get a new token after the old one was refused", zap.Error(err))
-		}
-	}
 
 	return response, nil
 }

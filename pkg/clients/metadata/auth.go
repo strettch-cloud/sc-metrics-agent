@@ -22,6 +22,9 @@ type AuthManager struct {
 	stopCh chan struct{}
 	// retryInterval is refreshRetryInterval when the manager was made.
 	retryInterval time.Duration
+	// fetched wakes the refresh loop when a fetch moves the refresh time, so
+	// the loop waits for the new token's refresh time, not the previous one's.
+	fetched chan struct{}
 
 	// fetchMu lets one fetch run at a time, so a token refused by both the
 	// ingest and the heartbeat is replaced once.
@@ -43,6 +46,7 @@ func NewAuthManager(cfg *config.Config, logger *zap.Logger) *AuthManager {
 		stopCh: make(chan struct{}),
 
 		retryInterval: refreshRetryInterval,
+		fetched:       make(chan struct{}, 1),
 	}
 }
 
@@ -55,6 +59,7 @@ func (am *AuthManager) fetchAndStoreToken(ctx context.Context, forceFetch bool) 
 }
 
 func (am *AuthManager) fetchAndStoreTokenLocked(ctx context.Context, forceFetch bool) error {
+	previousRefreshAt := am.client.RefreshAt()
 	if forceFetch {
 		am.logger.Debug("Forcing token refresh")
 		am.client.InvalidateCache()
@@ -67,8 +72,17 @@ func (am *AuthManager) fetchAndStoreTokenLocked(ctx context.Context, forceFetch 
 	am.mutex.Lock()
 	am.currentToken = token
 	am.mutex.Unlock()
+	if !am.client.RefreshAt().Equal(previousRefreshAt) {
+		select {
+		case am.fetched <- struct{}{}:
+		default:
+		}
+	}
 
-	cloudAPIURL, err := am.client.GetCloudAPIURL(ctx, am.vmID)
+	// The URL that came with this token. Asking the client for it with a
+	// fetch would get a second token when this one is already due (an
+	// expiresAt in the past), leaving the manager holding the first.
+	cloudAPIURL, err := am.client.cachedCloudAPIURL()
 	if err != nil {
 		return err
 	}
@@ -112,6 +126,8 @@ func (am *AuthManager) StartRefresh(ctx context.Context) {
 				if err := am.EnsureValidToken(ctx); err != nil {
 					am.logger.Error("Background token refresh failed", zap.Error(err))
 				}
+			case <-am.fetched:
+				timer.Stop()
 			case <-ctx.Done():
 				timer.Stop()
 				am.logger.Info("Token refresh stopped due to context cancel")

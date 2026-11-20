@@ -258,7 +258,7 @@ func TestSendingSavedBatches(t *testing.T) {
 		assert.Empty(t, rm.requests())
 	})
 
-	for _, status := range []int{200, 202, 204, 299} {
+	for _, status := range []int{http.StatusOK, http.StatusAccepted, http.StatusNoContent, 299} {
 		t.Run(fmt.Sprintf("a %d answer deletes the sent batches and logs how many were sent", status), func(t *testing.T) {
 			rm := newFakeResourceManagerF2(t, answerF2(status))
 			rig := newDrainRigF2(t, rigOptionsF2{cloudAPIURL: rm.server.URL, savedBatches: 3})
@@ -331,7 +331,7 @@ func TestSendingSavedBatches(t *testing.T) {
 		assert.Empty(t, rig.savedOnDisk(t))
 	})
 
-	for _, status := range []int{401, 403} {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("a %d answer leaves every batch saved", status), func(t *testing.T) {
 			rm := newFakeResourceManagerF2(t, answerF2(status))
 			rig := newDrainRigF2(t, rigOptionsF2{cloudAPIURL: rm.server.URL, savedBatches: 2})
@@ -352,7 +352,7 @@ func TestSendingSavedBatches(t *testing.T) {
 		assert.Equal(t, append(batchNamesF2(0, 2), "new"), rig.savedOnDisk(t))
 		rejected := rig.logged("Ingestor rejected envelope, leaving batches in buffer")
 		require.Len(t, rejected, 1)
-		assert.EqualValues(t, 404, rejected[0].ContextMap()["status_code"])
+		assert.EqualValues(t, http.StatusNotFound, rejected[0].ContextMap()["status_code"])
 	})
 }
 
@@ -375,9 +375,9 @@ func TestSendingSavedBatchesTheServerBlamesOnTheBatch(t *testing.T) {
 		}
 	}
 
-	for _, envelopeStatus := range []int{400, 413, 422} {
+	for _, envelopeStatus := range []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity} {
 		t.Run(fmt.Sprintf("after a %d, each batch is sent again alone; accepted ones are deleted and a rejected one is dropped and logged with its status and body", envelopeStatus), func(t *testing.T) {
-			rm := newFakeResourceManagerF2(t, scripted(envelopeStatus, map[string]int{"batch-01": 422}))
+			rm := newFakeResourceManagerF2(t, scripted(envelopeStatus, map[string]int{"batch-01": http.StatusUnprocessableEntity}))
 			rig := newDrainRigF2(t, rigOptionsF2{cloudAPIURL: rm.server.URL, savedBatches: 3})
 
 			rig.round(t, context.Background(), "new")
@@ -395,7 +395,7 @@ func TestSendingSavedBatchesTheServerBlamesOnTheBatch(t *testing.T) {
 		})
 	}
 
-	for _, batchStatus := range []int{400, 413} {
+	for _, batchStatus := range []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge} {
 		t.Run(fmt.Sprintf("a batch sent alone that gets %d is dropped", batchStatus), func(t *testing.T) {
 			rm := newFakeResourceManagerF2(t, scripted(http.StatusBadRequest, map[string]int{"batch-00": batchStatus}))
 			rig := newDrainRigF2(t, rigOptionsF2{cloudAPIURL: rm.server.URL, savedBatches: 1})
@@ -437,7 +437,7 @@ func TestSendingSavedBatchesTheServerBlamesOnTheBatch(t *testing.T) {
 }
 
 func TestSendingSavedBatchesWhenResourceManagerIsUnavailable(t *testing.T) {
-	for _, status := range []int{429, 500, 502, 503, 504} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
 		status := status
 		t.Run(fmt.Sprintf("a %d is tried again after its Retry-After, and a later 200 deletes the sent batches", status), func(t *testing.T) {
 			t.Parallel()

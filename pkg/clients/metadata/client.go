@@ -201,7 +201,11 @@ func (c *Client) GetCloudAPIURL(ctx context.Context, vmID string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("failed to get CloudAPI URL: %w", err)
 	}
+	return c.cachedCloudAPIURL()
+}
 
+// cachedCloudAPIURL returns the cached CloudAPI URL without fetching a token.
+func (c *Client) cachedCloudAPIURL() (string, error) {
 	c.tokenMu.RLock()
 	url := c.cachedAPIURL
 	c.tokenMu.RUnlock()

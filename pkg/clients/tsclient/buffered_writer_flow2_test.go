@@ -587,3 +587,28 @@ func TestHowLongTheAgentWaitsForRetryAfter(t *testing.T) {
 		})
 	}
 }
+
+func TestARetryNeverComesSoonerThanTheRequestRate(t *testing.T) {
+	// A Retry-After date at most 200 ms ahead: wait until late in the second,
+	// then name the next whole second.
+	for time.Now().Nanosecond() < int(800*time.Millisecond) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	nextSecond := time.Now().Truncate(time.Second).Add(time.Second)
+	rm := newFakeResourceManagerF2(t, func(w http.ResponseWriter, _ []string, attempt int) {
+		if attempt == 1 {
+			w.Header().Set("Retry-After", nextSecond.UTC().Format(http.TimeFormat))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	rig := newDrainRigF2(t, rigOptionsF2{cloudAPIURL: rm.server.URL})
+
+	rig.round(t, context.Background(), "new")
+
+	sent := rm.requests()
+	require.Len(t, sent, 2)
+	assert.GreaterOrEqual(t, sent[1].at.Sub(sent[0].at), splitSendInterval)
+	assert.Equal(t, 0, rig.queue.Len(), "the retried batch was accepted")
+}

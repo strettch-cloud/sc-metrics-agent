@@ -195,6 +195,9 @@ func (c *Client) sendWithRetry(ctx context.Context, data []byte, contentType str
 			if lastResponse != nil && lastResponse.RetryAfter > 0 {
 				waitTime = lastResponse.RetryAfter
 			}
+			// Never sooner than splitSendInterval, so a short Retry-After can't
+			// take the agent past its request rate.
+			waitTime = max(waitTime, splitSendInterval)
 
 			c.logger.Info("Retrying request",
 				zap.Int("attempt", attempt),

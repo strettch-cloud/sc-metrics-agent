@@ -16,6 +16,21 @@ env:
 # Go, golangci-lint, trivy and govulncheck are pinned in mise.toml; every step
 # below runs the same `mise run` task a developer runs locally.
 jobs:
+  # Its own job: the tests build about 40 throwaway repositories (~3 minutes),
+  # which would otherwise delay the main checks.
+  version-script:
+    name: Release version script
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the release version script
+        run: .github/scripts/next-version.test.sh
+
   validation:
     name: Test, Lint & Build
     runs-on: ubuntu-24.04

@@ -35,16 +35,26 @@ jobs:
           fetch-depth: 0 # needs all tags to compute the next beta number
           persist-credentials: false
 
+      # Exit 3: no commits since the last stable release, which happens when the
+      # stable release was cut on this very commit. Nothing to build; the run
+      # stays green and the later jobs are skipped.
       - name: Generate beta version
         id: version
         run: |
-          VERSION=$(.github/scripts/generate-version.sh beta)
+          status=0
+          VERSION=$(.github/scripts/next-version.sh beta) || status=$?
+          if [ "$status" -eq 3 ]; then
+            echo "::notice::No commits since the last stable release; no beta to make"
+            exit 0
+          fi
+          [ "$status" -eq 0 ] || exit "$status"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "::notice::Generated beta version: $VERSION"
 
   build:
     name: Build
     needs: version
+    if: needs.version.outputs.version != ''
     permissions:
       contents: read
     uses: ./.github/workflows/_build.yml

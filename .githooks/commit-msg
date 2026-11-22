@@ -1,0 +1,10 @@
+#!/bin/sh
+# commitlint — check the commit message follows Conventional Commits.
+#
+# Enable locally:  git config core.hooksPath .githooks
+# Needs Node 22.12 or later. CI checks the pull request title either way.
+if ! command -v npx >/dev/null 2>&1; then
+  echo "commitlint: Node/npx not found — skipping local check (CI still checks the pull request title)." >&2
+  exit 0
+fi
+exec npx --yes -p @commitlint/cli@21.2.2 -p @commitlint/config-conventional@21.2.2 commitlint --edit "$1"

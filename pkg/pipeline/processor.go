@@ -183,7 +183,12 @@ func (p *Processor) getAuthTokenWithRetry(ctx context.Context) (string, error) {
 
 	token := p.authMgr.GetCurrentToken()
 	if token != "" {
-		return token, nil
+		// Makes a request only when the token is due. On failure the round
+		// keeps the token it has, and the next round asks again.
+		if err := p.authMgr.EnsureValidToken(ctx); err != nil {
+			p.logger.Warn("Token refresh failed, keeping the current token", zap.Error(err))
+		}
+		return p.authMgr.GetCurrentToken(), nil
 	}
 
 	p.logger.Warn("Auth token is empty, attempting to refresh")

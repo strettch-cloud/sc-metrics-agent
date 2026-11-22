@@ -1,0 +1,38 @@
+name: PR title
+
+# Pull requests are squash-merged, so the title becomes the commit on main and
+# its type decides the next version. Separate from pr.yml so that editing the
+# title re-runs only this check.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: PR title follows Conventional Commits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # commitlint 21 needs Node 22.12 or later.
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The title goes through env, never interpolated into the script.
+      - name: Check title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$TITLE" | npx --yes \
+            -p @commitlint/cli@21.2.2 \
+            -p @commitlint/config-conventional@21.2.2 \
+            commitlint --config commitlint.title.config.mjs

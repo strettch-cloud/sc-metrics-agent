@@ -20,6 +20,8 @@ type fakeSender struct {
 	envelopes         [][][]byte
 	// compressErr, when set, fails every compression.
 	compressErr error
+	// sent, when set, runs after each send has been answered.
+	sent func()
 }
 
 type sendResult struct {
@@ -47,6 +49,9 @@ func (f *fakeSender) SendCompressedBatches(_ context.Context, batches [][]byte, 
 		snapshot[i] = append([]byte(nil), b...)
 	}
 	f.envelopes = append(f.envelopes, snapshot)
+	if f.sent != nil {
+		defer f.sent()
+	}
 
 	if len(f.results) == 0 {
 		return &Response{StatusCode: 202}, nil

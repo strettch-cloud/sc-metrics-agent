@@ -219,13 +219,13 @@ func (c *cpuCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	// Only emit aggregate CPU stats (first entry in stat.CPU is the sum of all cores)
-	if len(stat.CPU) == 0 {
+	// CPUTotal is the "cpu" line of /proc/stat: all cores added together.
+	// stat.CPU holds the per-core lines, so stat.CPU[0] is core 0 alone.
+	cpu := stat.CPUTotal
+	if cpu == (procfs.CPUStat{}) {
 		c.logger.Debug("No CPU stats available")
 		return
 	}
-
-	cpu := stat.CPU[0] // First entry is aggregate across all cores
 
 	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.CounterValue, cpu.User, "user")
 	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.CounterValue, cpu.Nice, "nice")

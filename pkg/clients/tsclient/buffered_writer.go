@@ -3,6 +3,8 @@ package tsclient
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/strettch-cloud/sc-metrics-agent/pkg/aggregate"
 	"github.com/strettch-cloud/sc-metrics-agent/pkg/buffer"
@@ -12,6 +14,11 @@ import (
 // DrainBatchSize balances recovery speed and request size: 50 batches clear a
 // 24-hour backlog in ~30 minutes while keeping requests ~135 KiB.
 const DrainBatchSize = 50
+
+// splitSendInterval spaces out batches sent one at a time to 2 requests a
+// second, well under the ingest endpoint's per-token rate limit, which the
+// heartbeat counts against too. A variable only so tests can shorten it.
+var splitSendInterval = 500 * time.Millisecond
 
 // MetricWriter is the writer surface the pipeline consumes.
 type MetricWriter interface {
@@ -132,7 +139,16 @@ func (bw *BufferedMetricWriter) drain(ctx context.Context, authToken string) err
 		return nil
 	}
 
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
+	if blamesTheBatch(response.StatusCode) {
+		if len(batches) == 1 {
+			bw.dropRejected(response)
+		} else {
+			bw.sendEachAlone(ctx, batches, authToken)
+		}
+		return nil
+	}
+
+	if !isSuccess(response.StatusCode) {
 		bw.logger.Warn("Ingestor rejected envelope, leaving batches in buffer",
 			zap.Int("status_code", response.StatusCode),
 			zap.Int("attempted", len(batches)),
@@ -153,6 +169,63 @@ func (bw *BufferedMetricWriter) drain(ctx context.Context, authToken string) err
 	)
 	return nil
 }
+
+// sendEachAlone sends each batch of a refused envelope in its own request, so
+// one bad batch can't hold back the others. It stops at the first answer that
+// is neither a success nor a refusal of that batch, leaving that batch and the
+// ones after it saved for a later round.
+func (bw *BufferedMetricWriter) sendEachAlone(ctx context.Context, batches [][]byte, authToken string) {
+	bw.logger.Warn("Ingestor refused the envelope, sending its batches one at a time",
+		zap.Int("batches", len(batches)),
+	)
+	for _, batch := range batches {
+		select {
+		case <-time.After(splitSendInterval):
+		case <-ctx.Done():
+			return
+		}
+
+		response, err := bw.sender.SendCompressedBatches(ctx, [][]byte{batch}, authToken)
+		switch {
+		case err != nil:
+			bw.logger.Warn("Sending a batch alone failed, leaving it and the rest in buffer", zap.Error(err))
+			return
+		case isSuccess(response.StatusCode):
+			bw.queue.Pop()
+		case blamesTheBatch(response.StatusCode):
+			bw.dropRejected(response)
+		default:
+			bw.logger.Warn("Ingestor answered a batch sent alone, leaving it and the rest in buffer",
+				zap.Int("status_code", response.StatusCode),
+				zap.Int("buffered_batches", bw.queue.Len()),
+			)
+			return
+		}
+	}
+	bw.logger.Info("Sent buffered batches one at a time", zap.Int("buffered_batches", bw.queue.Len()))
+}
+
+// dropRejected deletes the oldest saved batch, the one the server refused.
+// Sending it again would get the same answer and block the queue.
+func (bw *BufferedMetricWriter) dropRejected(response *Response) {
+	bw.queue.Pop()
+	bw.logger.Error("Dropping rejected batch",
+		zap.Int("status_code", response.StatusCode),
+		zap.String("body", string(response.Body)),
+	)
+}
+
+// blamesTheBatch reports whether the status says the request's content is at
+// fault, so the same batch would be refused again.
+func blamesTheBatch(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
+func isSuccess(status int) bool { return status >= 200 && status < 300 }
 
 // SendHeartbeat delegates to the underlying writer; heartbeats are not buffered.
 func (bw *BufferedMetricWriter) SendHeartbeat(ctx context.Context, authToken string, version string) error {

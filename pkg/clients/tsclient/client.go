@@ -195,6 +195,9 @@ func (c *Client) sendWithRetry(ctx context.Context, data []byte, contentType str
 			if lastResponse != nil && lastResponse.RetryAfter > 0 {
 				waitTime = lastResponse.RetryAfter
 			}
+			// Never sooner than splitSendInterval, so a short Retry-After can't
+			// take the agent past its request rate.
+			waitTime = max(waitTime, splitSendInterval)
 
 			c.logger.Info("Retrying request",
 				zap.Int("attempt", attempt),
@@ -265,6 +268,13 @@ func (c *Client) sendRequest(ctx context.Context, data []byte, contentType strin
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// A refused token is renewed whether or not its body can be read.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if err := c.authMgr.RenewRefusedToken(ctx, authToken); err != nil {
+			c.logger.Warn("Failed to get a new token after the old one was refused", zap.Error(err))
+		}
+	}
+
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -316,26 +326,24 @@ func (c *Client) shouldRetry(statusCode int) bool {
 	}
 }
 
-// parseRetryAfter parses the Retry-After header value
+// maxRetryAfter caps the wait a Retry-After header asks for, so one answer
+// can't stall a round for longer than the HTTP timeout.
+const maxRetryAfter = 30 * time.Second
+
+// parseRetryAfter parses the Retry-After header value: seconds or an HTTP
+// date. It returns 0 for a missing, invalid or past value.
 func parseRetryAfter(value string) time.Duration {
 	if value == "" {
 		return 0
 	}
 
-	// Try parsing as seconds (integer)
-	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+	var wait time.Duration
+	if seconds, err := strconv.Atoi(value); err == nil {
+		wait = time.Duration(seconds) * time.Second
+	} else if t, err := http.ParseTime(value); err == nil {
+		wait = time.Until(t)
 	}
-
-	// Try parsing as HTTP date (not commonly used for this header)
-	if t, err := http.ParseTime(value); err == nil {
-		duration := time.Until(t)
-		if duration > 0 {
-			return duration
-		}
-	}
-
-	return 0
+	return max(0, min(wait, maxRetryAfter))
 }
 
 // Close closes the HTTP client

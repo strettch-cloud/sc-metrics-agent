@@ -253,7 +253,7 @@ func TestUpdaterLeavesAHeldAgentRunning(t *testing.T) {
 	box.publish(t, "/packages/new.deb", trustedGPGHome)
 	// The updater's earlier runs left the package lists behind, so a reinstall
 	// could download the package, as on a VM.
-	box.mustExec(t, "apt-get", "update", "--quiet=2")
+	box.requireAptUpdateWorks(t)
 
 	output, exitCode := box.runUpdater(t, cloud)
 

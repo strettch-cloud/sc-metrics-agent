@@ -106,6 +106,22 @@ func (box *container) requireExists(t *testing.T, path string, want bool) {
 	}
 }
 
+// requireAptUpdateWorks runs the plain apt-get update an owner runs, which
+// fails when any source is broken. The distribution's own sources are set
+// aside first, so it reads the agent's source alone and needs no network.
+func (box *container) requireAptUpdateWorks(t *testing.T) {
+	t.Helper()
+	box.mustExec(t, "sh", "-c", strings.Join([]string{
+		"mkdir -p /root/distribution-sources",
+		"find /etc/apt/sources.list.d -type f ! -name 'sc-*' -exec mv {} /root/distribution-sources/ ';'",
+		// Older releases keep their sources here; newer ones have no such file.
+		"if [ -f /etc/apt/sources.list ]; then mv /etc/apt/sources.list /root/distribution-sources/; fi",
+	}, " && "))
+	if output, exitCode := box.exec(t, nil, "apt-get", "update"); exitCode != 0 {
+		t.Errorf("apt-get update exited %d:\n%s", exitCode, output)
+	}
+}
+
 // requireRestoredSource checks the source is back, switched on, in deb822, and
 // that the plain apt-get update a customer runs works with it.
 func (box *container) requireRestoredSource(t *testing.T, edition string) {
@@ -118,9 +134,7 @@ func (box *container) requireRestoredSource(t *testing.T, edition string) {
 		t.Errorf("the source does not read the %q edition:\n%s", edition, source)
 	}
 	box.requireExists(t, disabledListSource, false)
-	if output, exitCode := box.exec(t, nil, "apt-get", "update"); exitCode != 0 {
-		t.Errorf("apt-get update exited %d with the restored source:\n%s", exitCode, output)
-	}
+	box.requireAptUpdateWorks(t)
 }
 
 func (box *container) requireUpdatedTo(t *testing.T, packageFile string, output string, exitCode int) {
@@ -260,9 +274,7 @@ func TestUpdaterDoesNotRestoreASourceItCannotVerify(t *testing.T) {
 	if installed := box.installedVersion(t); installed != previousVersion {
 		t.Errorf("version %s is installed, want %s", installed, previousVersion)
 	}
-	if output, exitCode := box.exec(t, nil, "apt-get", "update"); exitCode != 0 {
-		t.Errorf("apt-get update exited %d:\n%s", exitCode, output)
-	}
+	box.requireAptUpdateWorks(t)
 }
 
 // Removing the source is how an owner stops updates for good. The updater

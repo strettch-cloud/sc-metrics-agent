@@ -143,7 +143,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13']
+        os: ['ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:26.04', 'debian:12', 'debian:13']
     env:
       FPM_VERSION: '1.18.0' # same as _build.yml
       # Google's mirror of the official images avoids Docker Hub's pull limits.

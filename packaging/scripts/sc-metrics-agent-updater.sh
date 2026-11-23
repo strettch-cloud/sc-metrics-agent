@@ -14,7 +14,16 @@ readonly MAX_RETRIES=3
 readonly RETRY_DELAY=30
 readonly APT_LOCK_TIMEOUT="${SC_APT_LOCK_TIMEOUT:-300}"
 readonly CONFIG_DOWNLOAD_SCRIPT="/usr/lib/sc-metrics-agent/download-config.sh"
-readonly APT_SOURCES_LIST="${PACKAGE_NAME}.list"
+# The agent's APT source: one line, as install.sh writes it, or deb822.
+readonly LIST_SOURCE="/etc/apt/sources.list.d/${PACKAGE_NAME}.list"
+readonly DEB822_SOURCE="/etc/apt/sources.list.d/${PACKAGE_NAME}.sources"
+# What an Ubuntu release upgrade leaves of a one-line source it cannot convert.
+readonly DISABLED_LIST_SOURCE="${LIST_SOURCE}.disabled"
+readonly PACKAGED_KEYRING="/usr/lib/${PACKAGE_NAME}/apt-keyring.gpg"
+# The edition install.sh gives a system the repository does not publish.
+readonly FALLBACK_SUITE="noble"
+SOURCE_CANDIDATE=""
+SOURCE_ERROR=""
 
 # Ensure we're running as root
 if [ "$EUID" -ne 0 ]; then 
@@ -45,6 +54,7 @@ log() {
 # shellcheck disable=SC2329 # called from the trap below, which shellcheck does not follow
 cleanup() {
     rmdir "${LOCK_FILE}" 2>/dev/null || true
+    rm -f "${SOURCE_CANDIDATE}"
 }
 
 # Set up exit trap
@@ -65,10 +75,157 @@ if [ ! -f /etc/debian_version ]; then
     exit 1
 fi
 
-# Verify the metrics APT source exists before scoping update to it.
-if [ ! -f "/etc/apt/sources.list.d/${APT_SOURCES_LIST}" ]; then
-    log "ERROR" "Metrics APT source missing: /etc/apt/sources.list.d/${APT_SOURCES_LIST}"
-    exit 1
+# A package on hold (apt-mark hold) is the owner's choice to stay on its
+# version: nothing is installed, and its APT source is left as it is.
+if [ "$(dpkg-query --show --showformat='${db:Status-Want}' "${PACKAGE_NAME}" 2>/dev/null || true)" = "hold" ]; then
+    log "INFO" "Package is on hold, leaving it on its version"
+    exit 0
+fi
+
+# Ensure every apt operation waits for the dpkg frontend lock.
+apt_get_with_lock() {
+    apt-get -o DPkg::Lock::Timeout="${APT_LOCK_TIMEOUT}" "$@"
+}
+
+# Refresh only the sc-metrics-agent source so unrelated third-party APT
+# repos on the host cannot block auto-updates by failing `apt-get update`.
+apt_update_agent_only() {
+    apt_get_with_lock update \
+        -o Dir::Etc::sourcelist="${ACTIVE_SOURCE}" \
+        -o Dir::Etc::sourceparts="/dev/null" \
+        -o APT::Get::List-Cleanup="0"
+}
+
+# An Ubuntu release upgrade (do-release-upgrade) switches off every APT source
+# that is not Ubuntu's own: a deb822 source gets "Enabled: no".
+deb822_source_is_off() {
+    grep -qiE '^Enabled:[[:space:]]*(no|false|off|0)[[:space:]]*$' "${DEB822_SOURCE}"
+}
+
+# Prints the first value of a field of the deb822 source.
+deb822_field() {
+    awk -v field="$1:" '$1 == field { print $2; exit }' "${DEB822_SOURCE}"
+}
+
+# Prints the source line the upgrade commented out in its ".disabled" copy. A
+# file the owner renamed by hand still has its line uncommented: prints nothing.
+disabled_list_line() {
+    [ -f "${DISABLED_LIST_SOURCE}" ] || return 0
+    sed -n '/^#[[:space:]]*deb[[:space:]]/{s/^#[[:space:]]*//p;q}' "${DISABLED_LIST_SOURCE}"
+}
+
+# Succeeds when APT fetches and verifies the source file $1 and finds the
+# package in the repository $2, edition $3; otherwise SOURCE_ERROR says why.
+# Error-Mode makes a failed download an error on the APT versions that know
+# it; the policy check covers the rest.
+source_answers() {
+    local policy
+    SOURCE_ERROR=$(apt_get_with_lock update \
+        -o Dir::Etc::sourcelist="$1" \
+        -o Dir::Etc::sourceparts="/dev/null" \
+        -o APT::Get::List-Cleanup="0" \
+        -o APT::Update::Error-Mode="any" 2>&1) || return 1
+    # Matched only after apt-cache has finished: under pipefail, a grep that
+    # stops at its first match would fail the pipeline.
+    policy=$(apt-cache -o Dir::Etc::sourcelist="$1" -o Dir::Etc::sourceparts="/dev/null" \
+        policy "${PACKAGE_NAME}" 2>/dev/null) || true
+    if [[ "${policy}" != *" $2 $3"* ]]; then
+        SOURCE_ERROR="${PACKAGE_NAME} is not in $2 $3"
+        return 1
+    fi
+}
+
+# Puts back, in deb822, the source an Ubuntu release upgrade switched off. It
+# is only written once APT has verified it, so a source that cannot work never
+# breaks the owner's own `apt-get update`.
+restore_source() {
+    local line uri suite components="" signed_by="" options="" release candidate tried=""
+    local pattern='^deb[[:space:]]+(\[([^]]*)\][[:space:]]+)?([^[:space:]]+)[[:space:]]+([^[:space:]]+)([[:space:]]+(.*))?$'
+
+    if [ -f "${DEB822_SOURCE}" ]; then
+        uri=$(deb822_field URIs)
+        suite=$(deb822_field Suites)
+        signed_by=$(deb822_field Signed-By)
+    else
+        line=$(disabled_list_line)
+        if [[ ! "${line}" =~ ${pattern} ]]; then
+            log "ERROR" "Could not read the switched-off APT source ${DISABLED_LIST_SOURCE}"
+            return 1
+        fi
+        options="${BASH_REMATCH[2]}"
+        uri="${BASH_REMATCH[3]}"
+        suite="${BASH_REMATCH[4]}"
+        components="${BASH_REMATCH[6]}"
+        if [[ " ${options} " =~ [[:space:]]signed-by=([^[:space:]]+)[[:space:]] ]]; then
+            signed_by="${BASH_REMATCH[1]}"
+        fi
+    fi
+    uri="${uri%/}"
+    if [ -z "${uri}" ] || [ -z "${suite}" ]; then
+        log "ERROR" "Could not read the switched-off APT source"
+        return 1
+    fi
+
+    if [ -n "${signed_by}" ] && [ ! -e "${signed_by}" ] && [ -f "${PACKAGED_KEYRING}" ]; then
+        install -m 644 "${PACKAGED_KEYRING}" "${signed_by}"
+    fi
+
+    # Ubuntu's next release upgrade carries a source over only when it is named
+    # after the release the VM runs, so that edition is tried first. A suite
+    # ending in "/" is an exact path with no editions.
+    local -a candidates=("${suite}")
+    if [[ "${suite}" != */ ]]; then
+        # shellcheck source=/dev/null
+        release=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+        candidates=("${release}" "${suite}" "${FALLBACK_SUITE}")
+    fi
+
+    if ! SOURCE_CANDIDATE=$(mktemp --suffix=.sources "/run/${PACKAGE_NAME}-source.XXXXXX"); then
+        log "ERROR" "Could not create a file to try the APT source in"
+        return 1
+    fi
+    for candidate in "${candidates[@]}"; do
+        if [ -z "${candidate}" ] || [[ " ${tried} " == *" ${candidate} "* ]]; then
+            continue
+        fi
+        tried="${tried} ${candidate}"
+        if [ -f "${DEB822_SOURCE}" ]; then
+            sed -e '/^Enabled:/Id' -e "s|^Suites:.*|Suites: ${candidate}|" "${DEB822_SOURCE}" > "${SOURCE_CANDIDATE}"
+        else
+            {
+                echo "Types: deb"
+                echo "URIs: ${uri}"
+                echo "Suites: ${candidate}"
+                if [ -n "${components}" ]; then echo "Components: ${components}"; fi
+                if [ -n "${signed_by}" ]; then echo "Signed-By: ${signed_by}"; fi
+            } > "${SOURCE_CANDIDATE}"
+        fi
+        if source_answers "${SOURCE_CANDIDATE}" "${uri}" "${candidate}"; then
+            install -m 644 "${SOURCE_CANDIDATE}" "${DEB822_SOURCE}"
+            rm -f "${DISABLED_LIST_SOURCE}"
+            log "INFO" "Restored the APT source an Ubuntu release upgrade switched off: ${uri} ${candidate}"
+            return 0
+        fi
+    done
+
+    log "ERROR" "Could not restore the APT source: ${uri} did not answer for${tried}"
+    log "ERROR" "${SOURCE_ERROR}"
+    return 1
+}
+
+# Find the source to update from. One that an Ubuntu release upgrade switched
+# off is put back. One the owner removed or renamed stays that way: there is
+# nothing to update from, and nothing to fail about.
+if [ -f "${DEB822_SOURCE}" ] && ! deb822_source_is_off; then
+    ACTIVE_SOURCE="${DEB822_SOURCE}"
+elif [ -f "${LIST_SOURCE}" ]; then
+    ACTIVE_SOURCE="${LIST_SOURCE}"
+elif [ -f "${DEB822_SOURCE}" ] || [ -n "$(disabled_list_line)" ]; then
+    restore_source || exit 1
+    ACTIVE_SOURCE="${DEB822_SOURCE}"
+else
+    log "INFO" "The agent's APT source was removed, not updating"
+    exit 0
 fi
 
 # Add jitter to prevent thundering herd
@@ -79,20 +236,6 @@ sleep ${JITTER}
 # Set APT environment
 export DEBIAN_FRONTEND=noninteractive
 export SC_AGENT_AUTO_UPDATER=1
-
-# Ensure every apt operation waits for the dpkg frontend lock.
-apt_get_with_lock() {
-    apt-get -o DPkg::Lock::Timeout="${APT_LOCK_TIMEOUT}" "$@"
-}
-
-# Refresh only the sc-metrics source so unrelated third-party APT
-# repos on the host cannot block auto-updates by failing `apt-get update`.
-apt_update_agent_only() {
-    apt_get_with_lock update \
-        -o Dir::Etc::sourcelist="sources.list.d/${APT_SOURCES_LIST}" \
-        -o Dir::Etc::sourceparts="/dev/null" \
-        -o APT::Get::List-Cleanup="0"
-}
 
 # Function to check package health
 check_package_health() {

@@ -3,8 +3,12 @@
 package lifecycle
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // These tests cover what the updater does about the agent's APT source.
@@ -145,6 +149,74 @@ func (box *container) requireUpdatedTo(t *testing.T, packageFile string, output 
 	if installed, want := box.installedVersion(t), box.packageVersion(t, packageFile); installed != want {
 		t.Errorf("version %s is installed, want %s\n%s", installed, want, output)
 	}
+}
+
+// startFakeReleaseUpgrade starts a process that looks like Ubuntu's release
+// upgrader: do-release-upgrade unpacks it to /tmp/ubuntu-release-upgrader-<random>/
+// and runs it from there. The returned function ends it.
+func (box *container) startFakeReleaseUpgrade(t *testing.T) func() {
+	t.Helper()
+	const directory = "/tmp/ubuntu-release-upgrader-x1y2z3"
+	box.mustExec(t, "sh", "-c", "mkdir -p "+directory+" && printf '#!/bin/sh\\nsleep 600\\n' > "+directory+"/resolute && chmod +x "+directory+"/resolute")
+	start := exec.Command("docker", "exec", "--detach", box.name, directory+"/resolute", "--mode=server", "--frontend=DistUpgradeViewNonInteractive")
+	if output, err := start.CombinedOutput(); err != nil {
+		t.Fatalf("starting the fake release upgrade: %v\n%s", err, output)
+	}
+	require.Eventually(t, func() bool {
+		_, exitCode := box.exec(t, nil, "pgrep", "-f", directory+"/")
+		return exitCode == 0
+	}, 10*time.Second, pollEvery, "the fake release upgrade never started")
+	return func() { box.mustExec(t, "pkill", "-f", directory+"/") }
+}
+
+// Ubuntu's release upgrade rebuilds APT's caches as it goes. An apt-get update
+// at the wrong moment removes the files it is writing and makes it abort
+// before its clean-up. So the updater stays away from APT until it is over.
+func TestUpdaterWaitsForAnUbuntuReleaseUpgradeToEnd(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	previousVersion := box.installedVersion(t)
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	endReleaseUpgrade := box.startFakeReleaseUpgrade(t)
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	if exitCode != 0 {
+		t.Errorf("the updater exited %d during the release upgrade:\n%s", exitCode, output)
+	}
+	if installed := box.installedVersion(t); installed != previousVersion {
+		t.Errorf("version %s was installed during the release upgrade:\n%s", installed, output)
+	}
+
+	endReleaseUpgrade()
+	output, exitCode = box.runUpdater(t, cloud)
+
+	box.requireUpdatedTo(t, newerPackage, output, exitCode)
+}
+
+func TestUpdaterRestoresTheSourceOnlyAfterTheUbuntuReleaseUpgradeEnds(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	box.ubuntuUpgradeDeletesTheSource(t)
+	endReleaseUpgrade := box.startFakeReleaseUpgrade(t)
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	if exitCode != 0 {
+		t.Errorf("the updater exited %d during the release upgrade:\n%s", exitCode, output)
+	}
+	if files := box.sourceFiles(t); files != "sc-metrics-agent.list.disabled" {
+		t.Errorf("the source files are %q during the release upgrade, want only the leftover:\n%s", files, output)
+	}
+
+	endReleaseUpgrade()
+	output, exitCode = box.runUpdater(t, cloud)
+
+	box.requireUpdatedTo(t, newerPackage, output, exitCode)
+	box.requireRestoredSource(t, "./")
 }
 
 func TestUpdaterRestoresTheSourceAnUbuntuUpgradeDeleted(t *testing.T) {

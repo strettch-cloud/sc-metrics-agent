@@ -75,6 +75,16 @@ if [ ! -f /etc/debian_version ]; then
     exit 1
 fi
 
+# Ubuntu's release upgrade (do-release-upgrade) unpacks its upgrader to
+# /tmp/ubuntu-release-upgrader-<random>/ and runs it from there. While it runs
+# it rebuilds APT's caches, and an `apt-get update` at the wrong moment removes
+# the files it is writing and makes it abort before its clean-up. Nothing is
+# updated until it is over.
+if pgrep -f '/ubuntu-release-upgrader-[^/ ]+/' >/dev/null 2>&1; then
+    log "INFO" "An Ubuntu release upgrade is running, not updating until it is over"
+    exit 0
+fi
+
 # A package on hold (apt-mark hold) is the owner's choice to stay on its
 # version: nothing is installed, and its APT source is left as it is.
 if [ "$(dpkg-query --show --showformat='${db:Status-Want}' "${PACKAGE_NAME}" 2>/dev/null || true)" = "hold" ]; then

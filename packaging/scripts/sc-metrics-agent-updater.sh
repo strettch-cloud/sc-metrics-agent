@@ -76,11 +76,12 @@ if [ ! -f /etc/debian_version ]; then
 fi
 
 # Ubuntu's release upgrade (do-release-upgrade) unpacks its upgrader to
-# /tmp/ubuntu-release-upgrader-<random>/ and runs it from there. While it runs
-# it rebuilds APT's caches, and an `apt-get update` at the wrong moment removes
-# the files it is writing and makes it abort before its clean-up. Nothing is
-# updated until it is over.
-if pgrep -f '/ubuntu-release-upgrader-[^/ ]+/' >/dev/null 2>&1; then
+# /tmp/ubuntu-release-upgrader-<random>/ and runs it from there, as root. While
+# it runs it rebuilds APT's caches, and an `apt-get update` at the wrong moment
+# removes the files it is writing and makes it abort before its clean-up.
+# Nothing is updated until it is over. Only root's processes count, so no other
+# user can hold updates off with a process that looks like it.
+if pgrep -u root -f '/ubuntu-release-upgrader-[^/ ]+/' >/dev/null 2>&1; then
     log "INFO" "An Ubuntu release upgrade is running, not updating until it is over"
     exit 0
 fi
@@ -112,9 +113,19 @@ deb822_source_is_off() {
     grep -qiE '^Enabled:[[:space:]]*(no|false|off|0)[[:space:]]*$' "${DEB822_SOURCE}"
 }
 
-# Prints the first value of a field of the deb822 source.
+# Prints the first value of a field of the deb822 source. Field names are
+# case-insensitive and need no space after the colon.
 deb822_field() {
-    awk -v field="$1:" '$1 == field { print $2; exit }' "${DEB822_SOURCE}"
+    awk -v field="$1" '
+        { name = $0; sub(/:.*/, "", name) }
+        tolower(name) == tolower(field) {
+            value = $0
+            sub(/^[^:]*:[[:space:]]*/, "", value)
+            split(value, words, /[[:space:]]+/)
+            print words[1]
+            exit
+        }
+    ' "${DEB822_SOURCE}"
 }
 
 # Prints the source line the upgrade commented out in its ".disabled" copy. A
@@ -200,7 +211,7 @@ restore_source() {
         fi
         tried="${tried} ${candidate}"
         if [ -f "${DEB822_SOURCE}" ]; then
-            sed -e '/^Enabled:/Id' -e "s|^Suites:.*|Suites: ${candidate}|" "${DEB822_SOURCE}" > "${SOURCE_CANDIDATE}"
+            sed -e '/^Enabled:/Id' -e "s|^Suites:.*|Suites: ${candidate}|I" "${DEB822_SOURCE}" > "${SOURCE_CANDIDATE}"
         else
             {
                 echo "Types: deb"
@@ -211,7 +222,15 @@ restore_source() {
             } > "${SOURCE_CANDIDATE}"
         fi
         if source_answers "${SOURCE_CANDIDATE}" "${uri}" "${candidate}"; then
-            install -m 644 "${SOURCE_CANDIDATE}" "${DEB822_SOURCE}"
+            # Written under a name APT ignores, then renamed: a write that
+            # fails leaves no half-written source, and keeps what the upgrade
+            # left for the next run to restore from.
+            if ! install -m 644 "${SOURCE_CANDIDATE}" "${DEB822_SOURCE}.dpkg-new" \
+                || ! mv -f "${DEB822_SOURCE}.dpkg-new" "${DEB822_SOURCE}"; then
+                rm -f "${DEB822_SOURCE}.dpkg-new"
+                log "ERROR" "Could not write the APT source ${DEB822_SOURCE}"
+                return 1
+            fi
             rm -f "${DISABLED_LIST_SOURCE}"
             log "INFO" "Restored the APT source an Ubuntu release upgrade switched off: ${uri} ${candidate}"
             return 0

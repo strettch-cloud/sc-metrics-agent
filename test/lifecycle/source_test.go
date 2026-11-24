@@ -131,7 +131,7 @@ func (box *container) requireAptUpdateWorks(t *testing.T) {
 func (box *container) requireRestoredSource(t *testing.T, edition string) {
 	t.Helper()
 	source := box.mustExec(t, "cat", deb822Source)
-	if strings.Contains(source, "Enabled:") {
+	if strings.Contains(strings.ToLower(source), "enabled:") {
 		t.Errorf("the source is still switched off:\n%s", source)
 	}
 	if !strings.Contains(source+"\n", "\nSuites: "+edition+"\n") {
@@ -153,12 +153,12 @@ func (box *container) requireUpdatedTo(t *testing.T, packageFile string, output 
 
 // startFakeReleaseUpgrade starts a process that looks like Ubuntu's release
 // upgrader: do-release-upgrade unpacks it to /tmp/ubuntu-release-upgrader-<random>/
-// and runs it from there. The returned function ends it.
-func (box *container) startFakeReleaseUpgrade(t *testing.T) func() {
+// and runs it from there, as root. The returned function ends it.
+func (box *container) startFakeReleaseUpgrade(t *testing.T, user string) func() {
 	t.Helper()
 	const directory = "/tmp/ubuntu-release-upgrader-x1y2z3"
 	box.mustExec(t, "sh", "-c", "mkdir -p "+directory+" && printf '#!/bin/sh\\nsleep 600\\n' > "+directory+"/resolute && chmod +x "+directory+"/resolute")
-	start := exec.Command("docker", "exec", "--detach", box.name, directory+"/resolute", "--mode=server", "--frontend=DistUpgradeViewNonInteractive")
+	start := exec.Command("docker", "exec", "--detach", "--user", user, box.name, directory+"/resolute", "--mode=server", "--frontend=DistUpgradeViewNonInteractive")
 	if output, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("starting the fake release upgrade: %v\n%s", err, output)
 	}
@@ -178,7 +178,7 @@ func TestUpdaterWaitsForAnUbuntuReleaseUpgradeToEnd(t *testing.T) {
 	previousVersion := box.installedVersion(t)
 	newerPackage := box.buildNewerPackage(t)
 	box.publish(t, newerPackage, trustedGPGHome)
-	endReleaseUpgrade := box.startFakeReleaseUpgrade(t)
+	endReleaseUpgrade := box.startFakeReleaseUpgrade(t, "root")
 
 	output, exitCode := box.runUpdater(t, cloud)
 
@@ -195,13 +195,27 @@ func TestUpdaterWaitsForAnUbuntuReleaseUpgradeToEnd(t *testing.T) {
 	box.requireUpdatedTo(t, newerPackage, output, exitCode)
 }
 
+// The upgrade runs as root. A process of any other user that merely looks like
+// it must not be able to hold the agent's updates off.
+func TestUpdaterIgnoresALookalikeOfTheReleaseUpgradeRunByAnotherUser(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	box.startFakeReleaseUpgrade(t, "nobody")
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	box.requireUpdatedTo(t, newerPackage, output, exitCode)
+}
+
 func TestUpdaterRestoresTheSourceOnlyAfterTheUbuntuReleaseUpgradeEnds(t *testing.T) {
 	t.Parallel()
 	box, cloud := installForUpdate(t, "new.deb")
 	newerPackage := box.buildNewerPackage(t)
 	box.publish(t, newerPackage, trustedGPGHome)
 	box.ubuntuUpgradeDeletesTheSource(t)
-	endReleaseUpgrade := box.startFakeReleaseUpgrade(t)
+	endReleaseUpgrade := box.startFakeReleaseUpgrade(t, "root")
 
 	output, exitCode := box.runUpdater(t, cloud)
 
@@ -245,6 +259,44 @@ func TestUpdaterRestoresTheSourceAnUbuntuUpgradeSwitchedOff(t *testing.T) {
 
 	box.requireUpdatedTo(t, newerPackage, output, exitCode)
 	box.requireRestoredSource(t, "./")
+}
+
+// deb822 field names are case-insensitive and need no space after the colon.
+func TestUpdaterRestoresASwitchedOffSourceWrittenInAnotherStyle(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	box.mustExec(t, "sh", "-c", "printf '%s\\n' 'types:deb' 'uris:file:"+repositoryPath+"' 'suites:./' 'signed-by:"+trustedKeyring+"' 'enabled:no' > "+deb822Source+" && rm "+listSource)
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	box.requireUpdatedTo(t, newerPackage, output, exitCode)
+	box.requireRestoredSource(t, "./")
+}
+
+// When the restored source cannot be written, a full disk for example, what
+// the upgrade left must stay: it is all the next run has to restore from.
+func TestUpdaterKeepsTheLeftoverWhenTheSourceCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	box.publish(t, box.buildNewerPackage(t), trustedGPGHome)
+	box.ubuntuUpgradeDeletesTheSource(t)
+	// A directory with room for the leftover and no other file.
+	box.mustExec(t, "sh", "-c", strings.Join([]string{
+		"cp " + disabledListSource + " /root/leftover",
+		"mount -t tmpfs -o nr_inodes=2 tmpfs /etc/apt/sources.list.d",
+		"cp /root/leftover " + disabledListSource,
+	}, " && "))
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	if exitCode == 0 {
+		t.Errorf("the updater reported success:\n%s", output)
+	}
+	if files := box.sourceFiles(t); files != "sc-metrics-agent.list.disabled" {
+		t.Errorf("the source files are now %q, want only the leftover:\n%s", files, output)
+	}
 }
 
 // install.sh will write the source in deb822, and "apt modernize-sources"

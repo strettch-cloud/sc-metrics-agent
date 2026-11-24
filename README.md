@@ -61,7 +61,7 @@ This adds the signed APT repository, installs the package and starts two systemd
 
 To try pre-release builds, use `https://repo.cloud.strettch.com/metrics/beta/install.sh` instead.
 
-Supported: Ubuntu 18.04, 20.04, 22.04 and 24.04 on `amd64` and `arm64`.
+Supported: Ubuntu 18.04, 20.04, 22.04, 24.04 and 26.04 on `amd64` and `arm64`.
 
 ## Operating the agent
 
@@ -71,6 +71,25 @@ sudo journalctl -u sc-metrics-agent -f                       # logs
 sudo systemctl start sc-metrics-agent-update-scheduler.service  # check for an update now
 sc-metrics-agent -v                                          # installed version
 ```
+
+### Updates
+
+The agent updates itself from the APT repository. To stay on the installed version, hold the
+package. The updater then leaves the agent and its APT source alone:
+
+```bash
+sudo apt-mark hold sc-metrics-agent    # stay on this version
+sudo apt-mark unhold sc-metrics-agent  # receive updates again
+```
+
+An Ubuntu release upgrade (`do-release-upgrade`) switches off APT sources that are not Ubuntu's
+own. The updater puts the agent's source back at its next run, so the agent keeps updating. The
+package also lists its repository in `/etc/update-manager/release-upgrades.d/sc-metrics-agent.cfg`,
+which lets the upgrade keep a source in the newer `.sources` format switched on.
+
+To stop updates for good, remove the agent's source from `/etc/apt/sources.list.d/`
+(`sc-metrics-agent.list` or `sc-metrics-agent.sources`, and `sc-metrics-agent.list.disabled` or
+`sc-metrics-agent.list.distUpgrade` if an Ubuntu upgrade left one). A source you removed is never put back.
 
 Remove it with `sudo apt-get purge sc-metrics-agent`.
 

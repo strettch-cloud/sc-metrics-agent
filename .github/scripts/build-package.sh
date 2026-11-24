@@ -31,6 +31,11 @@ cp "packaging/systemd/${PACKAGE_NAME}.service" "${STAGING_DIR}/etc/systemd/syste
 cp "packaging/systemd/${PACKAGE_NAME}-update-scheduler.service" "${STAGING_DIR}/etc/systemd/system/"
 cp "packaging/systemd/${PACKAGE_NAME}-update-scheduler.timer" "${STAGING_DIR}/etc/systemd/system/"
 
+# Ubuntu's release upgrade switches off every APT source whose address is not
+# on its allow list. This file puts the agent's repository on it.
+install -D -m 644 "packaging/release-upgrades.d/${PACKAGE_NAME}.cfg" \
+    "${STAGING_DIR}/etc/update-manager/release-upgrades.d/${PACKAGE_NAME}.cfg"
+
 # APT keyring: post-install copies it over the one the installer at
 # repo.cloud.strettch.com/metrics/install.sh downloaded, so each
 # upgrade refreshes which repository signing keys the host trusts.

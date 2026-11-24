@@ -17,8 +17,11 @@ readonly CONFIG_DOWNLOAD_SCRIPT="/usr/lib/sc-metrics-agent/download-config.sh"
 # The agent's APT source: one line, as install.sh writes it, or deb822.
 readonly LIST_SOURCE="/etc/apt/sources.list.d/${PACKAGE_NAME}.list"
 readonly DEB822_SOURCE="/etc/apt/sources.list.d/${PACKAGE_NAME}.sources"
-# What an Ubuntu release upgrade leaves of a one-line source it cannot convert.
+# What an Ubuntu release upgrade leaves of a one-line source it cannot convert:
+# a commented copy (upgrades to 26.04 and later), or only its own backup of
+# the file (the upgrade to 24.04, which removes the source itself).
 readonly DISABLED_LIST_SOURCE="${LIST_SOURCE}.disabled"
+readonly BACKUP_LIST_SOURCE="${LIST_SOURCE}.distUpgrade"
 readonly PACKAGED_KEYRING="/usr/lib/${PACKAGE_NAME}/apt-keyring.gpg"
 # The edition install.sh gives a system the repository does not publish.
 readonly FALLBACK_SUITE="noble"
@@ -128,11 +131,16 @@ deb822_field() {
     ' "${DEB822_SOURCE}"
 }
 
-# Prints the source line the upgrade commented out in its ".disabled" copy. A
-# file the owner renamed by hand still has its line uncommented: prints nothing.
-disabled_list_line() {
-    [ -f "${DISABLED_LIST_SOURCE}" ] || return 0
-    sed -n '/^#[[:space:]]*deb[[:space:]]/{s/^#[[:space:]]*//p;q}' "${DISABLED_LIST_SOURCE}"
+# Prints the source line an Ubuntu release upgrade left behind: commented out
+# in its ".disabled" copy, or as it was in its ".distUpgrade" backup. A
+# ".disabled" file whose line is not commented out was renamed by the owner:
+# prints nothing for it.
+leftover_list_line() {
+    if [ -f "${DISABLED_LIST_SOURCE}" ]; then
+        sed -n '/^#[[:space:]]*deb[[:space:]]/{s/^#[[:space:]]*//p;q}' "${DISABLED_LIST_SOURCE}"
+    elif [ -f "${BACKUP_LIST_SOURCE}" ]; then
+        sed -n '/^deb[[:space:]]/{p;q}' "${BACKUP_LIST_SOURCE}"
+    fi
 }
 
 # Succeeds when APT fetches and verifies the source file $1 and finds the
@@ -168,9 +176,9 @@ restore_source() {
         suite=$(deb822_field Suites)
         signed_by=$(deb822_field Signed-By)
     else
-        line=$(disabled_list_line)
+        line=$(leftover_list_line)
         if [[ ! "${line}" =~ ${pattern} ]]; then
-            log "ERROR" "Could not read the switched-off APT source ${DISABLED_LIST_SOURCE}"
+            log "ERROR" "Could not read the APT source the Ubuntu release upgrade left behind"
             return 1
         fi
         options="${BASH_REMATCH[2]}"
@@ -231,7 +239,9 @@ restore_source() {
                 log "ERROR" "Could not write the APT source ${DEB822_SOURCE}"
                 return 1
             fi
-            rm -f "${DISABLED_LIST_SOURCE}"
+            # Left in place, either would bring back a source the owner
+            # removes later.
+            rm -f "${DISABLED_LIST_SOURCE}" "${BACKUP_LIST_SOURCE}"
             log "INFO" "Restored the APT source an Ubuntu release upgrade switched off: ${uri} ${candidate}"
             return 0
         fi
@@ -249,7 +259,7 @@ if [ -f "${DEB822_SOURCE}" ] && ! deb822_source_is_off; then
     ACTIVE_SOURCE="${DEB822_SOURCE}"
 elif [ -f "${LIST_SOURCE}" ]; then
     ACTIVE_SOURCE="${LIST_SOURCE}"
-elif [ -f "${DEB822_SOURCE}" ] || [ -n "$(disabled_list_line)" ]; then
+elif [ -f "${DEB822_SOURCE}" ] || [ -n "$(leftover_list_line)" ]; then
     restore_source || exit 1
     ACTIVE_SOURCE="${DEB822_SOURCE}"
 else

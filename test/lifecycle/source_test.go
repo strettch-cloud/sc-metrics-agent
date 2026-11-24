@@ -25,6 +25,8 @@ const (
 	deb822Source = "/etc/apt/sources.list.d/sc-metrics-agent.sources"
 	// What the upgrade leaves of a one-line source.
 	disabledListSource = listSource + ".disabled"
+	// The backup the upgrade to 24.04 leaves when it removes a one-line source.
+	backupListSource = listSource + ".distUpgrade"
 	// A repository with one edition per release, like the real one.
 	editionsPath = "/srv/apt-editions"
 	// The keyring install.sh writes and the package keeps current.
@@ -246,6 +248,23 @@ func TestUpdaterRestoresTheSourceAnUbuntuUpgradeDeleted(t *testing.T) {
 	box.requireUpdatedTo(t, newerPackage, output, exitCode)
 	box.requireRestoredSource(t, "./")
 	box.requireRunningNewBinary(t, previousPID)
+}
+
+// The upgrade from 22.04 to 24.04 removes a one-line source it cannot convert
+// and leaves no ".disabled" copy, only its own backup of the file as it was.
+func TestUpdaterRestoresTheSourceTheUpgradeTo2404Removed(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	box.mustExec(t, "mv", listSource, backupListSource)
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	box.requireUpdatedTo(t, newerPackage, output, exitCode)
+	box.requireRestoredSource(t, "./")
+	// Left in place, the backup would bring back a source the owner removes later.
+	box.requireExists(t, backupListSource, false)
 }
 
 func TestUpdaterRestoresTheSourceAnUbuntuUpgradeSwitchedOff(t *testing.T) {

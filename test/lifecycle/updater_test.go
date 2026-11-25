@@ -283,11 +283,12 @@ func TestUpdaterRefusesARepositorySignedByAnotherKey(t *testing.T) {
 
 // holdAptsPackageCache takes the lock APT puts on its package cache while it
 // downloads, the way unattended-upgrades holds it for minutes at a time. The
-// returned function lets go of it.
+// returned function lets go of it. The holder waits for the lock, since the
+// check below that it is held takes the same lock for a moment.
 func (box *container) holdAptsPackageCache(t *testing.T) func() {
 	t.Helper()
 	const holder = `use Fcntl; open(my $lock, "+>", "/var/cache/apt/archives/lock") or die $!; ` +
-		`my $whole_file = pack("s s x4 q q i x4", F_WRLCK, 0, 0, 0, 0); fcntl($lock, F_SETLK, $whole_file) or die $!; sleep 600`
+		`my $whole_file = pack("s s x4 q q i x4", F_WRLCK, 0, 0, 0, 0); fcntl($lock, F_SETLKW, $whole_file) or die $!; sleep 600`
 	start := exec.Command("docker", "exec", "--detach", box.name, "perl", "-e", holder, "hold-apts-package-cache")
 	if output, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("taking APT's package cache lock: %v\n%s", err, output)

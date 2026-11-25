@@ -3,6 +3,7 @@
 package lifecycle
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -278,4 +279,59 @@ func TestUpdaterRefusesARepositorySignedByAnotherKey(t *testing.T) {
 	assert.Equal(t, previousVersion, box.installedVersion(t))
 	box.requireRunningAndEnabled(t, agentService)
 	assert.Equal(t, previousPID, box.mainPID(t))
+}
+
+// holdAptsPackageCache takes the lock APT puts on its package cache while it
+// downloads, the way unattended-upgrades holds it for minutes at a time. The
+// returned function lets go of it.
+func (box *container) holdAptsPackageCache(t *testing.T) func() {
+	t.Helper()
+	const holder = `use Fcntl; open(my $lock, "+>", "/var/cache/apt/archives/lock") or die $!; ` +
+		`my $whole_file = pack("s s x4 q q i x4", F_WRLCK, 0, 0, 0, 0); fcntl($lock, F_SETLK, $whole_file) or die $!; sleep 600`
+	start := exec.Command("docker", "exec", "--detach", box.name, "perl", "-e", holder, "hold-apts-package-cache")
+	if output, err := start.CombinedOutput(); err != nil {
+		t.Fatalf("taking APT's package cache lock: %v\n%s", err, output)
+	}
+	require.Eventually(t, func() bool {
+		_, exitCode := box.exec(t, nil, "apt-get", "clean")
+		return exitCode != 0
+	}, 10*time.Second, pollEvery, "APT's package cache lock was never taken")
+	return func() { box.mustExec(t, "pkill", "-f", "hold-apts-package-cache") }
+}
+
+// Another program downloading packages is no reason to fail the hourly check.
+func TestUpdaterChecksForAnUpdateWhileAptsPackageCacheIsInUse(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	box.publish(t, "/packages/new.deb", trustedGPGHome)
+	box.holdAptsPackageCache(t)
+
+	output, exitCode := box.runUpdater(t, cloud)
+
+	if exitCode != 0 {
+		t.Fatalf("the updater exited %d:\n%s", exitCode, output)
+	}
+	if !strings.Contains(output, "Already running latest version") {
+		t.Errorf("the updater didn't finish its check:\n%s", output)
+	}
+}
+
+func TestUpdaterUpdatesOnceAptsPackageCacheIsFree(t *testing.T) {
+	t.Parallel()
+	box, cloud := installForUpdate(t, "new.deb")
+	newerPackage := box.buildNewerPackage(t)
+	box.publish(t, newerPackage, trustedGPGHome)
+	letGo := box.holdAptsPackageCache(t)
+
+	box.runUpdater(t, cloud)
+
+	box.requireRunningAndEnabled(t, agentService)
+	if status := box.packageStatus(t); status != "ii" {
+		t.Errorf("the package is in state %q after a run with the cache in use", status)
+	}
+
+	letGo()
+	output, exitCode := box.runUpdater(t, cloud)
+
+	box.requireUpdatedTo(t, newerPackage, output, exitCode)
 }

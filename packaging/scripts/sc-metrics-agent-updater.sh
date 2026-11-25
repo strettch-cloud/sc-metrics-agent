@@ -349,8 +349,10 @@ fi
 for attempt in $(seq 1 ${MAX_RETRIES}); do
     log "INFO" "Updating package lists (attempt ${attempt}/${MAX_RETRIES})"
 
-    # Clean package cache for fresh data
-    apt_get_with_lock clean
+    # Empty APT's package cache. Another program that is downloading packages
+    # (unattended-upgrades, for one) holds its lock, sometimes for minutes; the
+    # check then goes on without cleaning.
+    apt_get_with_lock clean 2>&1 || log "WARN" "APT's package cache is in use, not cleaning it"
 
     if apt_update_agent_only 2>&1; then
         log "INFO" "Package list update successful"
